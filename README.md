@@ -1,87 +1,87 @@
-# E-Commerce Product Catalog Enrichment with Gemini in BigQuery & Vertex AI
+# BigQuery と Vertex AI (Gemini) による EC商品カタログ エンリッチメント
 
-A production-ready pipeline for enriching large-scale e-commerce product catalogs with AI-generated search tags using **Google Cloud Vertex AI (Gemini)** and **BigQuery**.
+本リポジトリは、**Google Cloud Retail Search (AI Commerce Search / Vertex AI Search for Retail)** および **BigQuery** に格納されたEC商品カタログに対して、**Gemini** を活用して高品質な検索タグ（tags）を自動生成・一括反映するためのプロダクション向けエンリッチメント・パイプラインです。
 
-Designed specifically for **Google Cloud Retail Search (AI Commerce Search / Vertex AI Search for Retail)** to maximize search recall across Japanese language variations (Kanji, Hiragana, Katakana, English / Romaji, colloquialisms, brand names, and phonetic variations).
+日本のEC検索における表記揺れ（漢字、ひらがな、カタカナ、アルファベット・英語表記、連濁、口語・俗称、ブランド名）を網羅し、**検索再現率（Search Recall）の最大化**を実現します。
 
 ---
 
-## Architecture Overview
+## アーキテクチャ概要
 
-This repository provides two implementation paths based on catalog size:
+カタログの規模に応じて、以下の2つの処理パスを選択できます：
 
 ```mermaid
 flowchart TD
-    subgraph Path 1: Direct BigQuery ML (Up to ~50K items)
-        A1["BigQuery Catalog Table<br/>(id, title, attributes)"] -->|"ML.GENERATE_TEXT<br/>(Remote Model)"| B1["Gemini Flash Inference"]
-        B1 -->|"Direct UPDATE"| A1
+    subgraph パス 1: BigQuery ML 直接呼び出し（中小規模: 数万件程度まで）
+        A1["BigQuery 商品カタログテーブル<br/>(id, title, attributes)"] -->|"ML.GENERATE_TEXT<br/>(リモートモデル)"| B1["Gemini Flash 推論"]
+        B1 -->|"インプレース UPDATE"| A1
     end
 
-    subgraph Path 2: Vertex AI Batch Prediction (Large scale: 50K ~ Millions of items)
-        A2["BigQuery Catalog Table"] -->|"Step 1: EXPORT DATA (JSONL)"| B2["Cloud Storage (GCS)"]
-        B2 -->|"Step 2: Vertex AI Batch Prediction<br/>(50% Cost Discount / No RPM Limit)"| C2["Gemini Flash Batch Inference"]
-        C2 -->|"Step 3: bq load --replace"| D2["BigQuery Temp Table"]
-        D2 -->|"Step 4: Fast Bulk UPDATE<br/>(Deduplicated via QUALIFY)"| A2
+    subgraph パス 2: Vertex AI Batch Prediction（大規模: 5万件〜数百万件）
+        A2["BigQuery 商品カタログテーブル"] -->|"Step 1: EXPORT DATA (JSONL)"| B2["Cloud Storage (GCS)"]
+        B2 -->|"Step 2: Vertex AI バッチ予測<br/>(料金50%割引 / RPM制限なし)"| C2["Gemini Flash バッチ推論"]
+        C2 -->|"Step 3: bq load --replace"| D2["BigQuery 一時テーブル"]
+        D2 -->|"Step 4: 高速一括UPDATE<br/>(QUALIFYで重複排除)"| A2
     end
 ```
 
 ---
 
-## Key Features
+## 主な特長
 
-- **Search Recall Optimization**: Generates 2–10 high-precision search tags per product covering Kanji (漢字), Hiragana (ひらがな), Katakana (カタカナ), English/Romaji (英語表記), voiced/unvoiced variations (連濁), and colloquial terminology.
-- **50% Cost Reduction & No Quota Limits**: Leverages Vertex AI Batch Prediction to slash token pricing by 50% while bypassing online API rate limits (RPM/TPM 429 errors).
-- **Schema Preservation**: Safely updates or inserts the `'tags'` attribute while preserving all existing custom attributes in the Retail API `ARRAY<STRUCT<key STRING, value STRUCT<...>>>` format.
-- **Production Resilience**:
-  - **Idempotent**: Re-runnable at any time without reprocessing already tagged items (`WHERE attributes IS NULL OR NOT EXISTS(...)`).
-  - **Deduplicated**: Prevents `UPDATE/MERGE must match at most one source row` errors using window functions (`QUALIFY ROW_NUMBER() = 1`).
-  - **Real-time Cost Tracking**: Includes BigQuery SQL to audit token usage and dollar expenses instantly from `usageMetadata`.
+- **検索再現率（Recall）の最適化**: 漢字、ひらがな、カタカナ、アルファベット、連濁（清音・濁音）、正式名称/俗称、用途・効能を網羅した検索タグ（2〜10件）を高精度に生成。
+- **コスト50%削減 & APIレート制限の回避**: Vertex AI Batch Prediction を採用することで、通常のオンライン推論料金から**50%割引**が適用され、かつ分間クォータ（RPM/TPM 429エラー）を回避して大量処理が可能。
+- **スキーマの完全互換性**: Google Cloud Retail API標準の `attributes` スキーマ（`ARRAY<STRUCT<key STRING, value STRUCT<text ARRAY<STRING>, numbers ARRAY<FLOAT64>>>>>`）を維持し、既存のカスタム属性を損なわずに `'tags'` のみを安全に追加・更新。
+- **プロダクションレジリエンス（高信頼性設計）**:
+  - **べき等性（Idempotency）**: 未タグ付けの商品のみを対象（`WHERE attributes IS NULL OR NOT EXISTS(...)`）とするため、途中で中断しても安全に再実行可能。
+  - **重複排除の保証**: `QUALIFY ROW_NUMBER() = 1` により、BigQuery の `UPDATE/MERGE must match at most one source row` エラーを防止。
+  - **リアルタイム費用監査**: バッチ結果の `usageMetadata` から、正確なトークン消費量とUSD費用を即時算出可能。
 
 ---
 
-## Repository Structure
+## リポジトリ構成
 
-| File | Description |
+| ファイル名 | 説明 |
 |---|---|
-| [`vertex_ai_batch_prediction_guide_ja.md`](vertex_ai_batch_prediction_guide_ja.md) | **Comprehensive Japanese Implementation Guide** detailing the full batch prediction lifecycle, parameter setup, and troubleshooting. |
-| [`update_enrichment_query.sql`](update_enrichment_query.sql) | SQL script for direct in-place catalog `UPDATE` using BigQuery ML (`ML.GENERATE_TEXT`). |
-| [`test_enrichment_query.sql`](test_enrichment_query.sql) | DDL for creating the Gemini Remote Model and a preview `SELECT` query for test validation. |
-| [`submit_batch_job.py`](submit_batch_job.py) | Ready-to-run Python script for submitting Vertex AI Batch Prediction jobs via the Vertex AI SDK. |
-| [`prompt.txt`](prompt.txt) | Tuned system prompt designed for e-commerce search indexing and Japanese morphological variants. |
-| [`AI_Commerce_Search_Bigquery_schema.json`](AI_Commerce_Search_Bigquery_schema.json) | Standard BigQuery schema definition for Google Cloud Retail Search catalog ingestion. |
-| [`data_mapping.md`](data_mapping.md) | Field mapping reference between e-commerce raw catalog attributes and Retail Search schema types. |
+| [`vertex_ai_batch_prediction_guide_ja.md`](vertex_ai_batch_prediction_guide_ja.md) | **Vertex AI Batch Prediction 詳細実装ガイド（日本語）**。バッチ全体の設計、パラメータ設定、トラブルシューティングを詳述。 |
+| [`update_enrichment_query.sql`](update_enrichment_query.sql) | BigQuery ML (`ML.GENERATE_TEXT`) を直接呼び出してインプレース更新するSQL。 |
+| [`test_enrichment_query.sql`](test_enrichment_query.sql) | Gemini リモートモデル作成DDLおよびテスト用プレビューSELECTクエリ。 |
+| [`submit_batch_job.py`](submit_batch_job.py) | Vertex AI Python SDK を使ってバッチ予測ジョブを投入する実行スクリプト。 |
+| [`prompt.txt`](prompt.txt) | 日本語EC検索の形態素・表記揺れ展開に特化してチューニングされたプロンプトテンプレート。 |
+| [`AI_Commerce_Search_Bigquery_schema.json`](AI_Commerce_Search_Bigquery_schema.json) | Google Cloud Retail Search 標準カタログの BigQuery スキーマ定義。 |
+| [`data_mapping.md`](data_mapping.md) | 元カタログHTML/データ項目と Retail API スキーマ型のマッピング仕様書。 |
 
 ---
 
-## Quickstart: Large-Scale Batch Pipeline
+## クイックスタート: 大規模バッチパイプライン
 
-### Prerequisites
+### 前提条件
 
-- A Google Cloud Project with the following APIs enabled:
+- 以下の Google Cloud API が有効化されていること：
   - BigQuery API (`bigquery.googleapis.com`)
   - Vertex AI API (`aiplatform.googleapis.com`)
   - Cloud Storage API (`storage.googleapis.com`)
-- A Cloud Storage bucket for staging batch inputs and outputs.
-- A BigQuery product table matching the Google Cloud Retail API schema.
+- 入出力用の Cloud Storage バケットが存在すること。
+- Retail API スキーマに準拠した BigQuery 商品テーブルが存在すること。
 
-### Configuration Parameters
+### 環境パラメータの設定
 
-Adjust the parameters below to match your GCP environment:
+環境に合わせて以下のパラメータを設定してください：
 
-| Parameter | Example Value | Description |
+| パラメータ名 | 設定例 | 説明 |
 |---|---|---|
-| `PROJECT_ID` | `retail-search-jp-demo-minsoo` | Google Cloud Project ID |
-| `DATASET_NAME` | `retail_search` | Target BigQuery dataset |
-| `TABLE_NAME` | `d-vais-c` | Target catalog table |
-| `BUCKET_NAME` | `catalog_enrichment_bigquery` | Cloud Storage bucket for batch processing |
-| `LOCATION` | `us-central1` | Vertex AI region (`us-central1` or `us`) |
-| `MODEL_NAME` | `gemini-2.5-flash` | Gemini model for batch prediction |
+| `PROJECT_ID` | `retail-search-jp-demo-minsoo` | Google Cloud プロジェクトID |
+| `DATASET_NAME` | `retail_search` | 対象 BigQuery データセット名 |
+| `TABLE_NAME` | `d-vais-c` | 対象商品カタログテーブル名 |
+| `BUCKET_NAME` | `catalog_enrichment_bigquery` | バッチ処理用 Cloud Storage バケット名 |
+| `LOCATION` | `us-central1` | Vertex AI リージョン (`us-central1` または `us`) |
+| `MODEL_NAME` | `gemini-2.5-flash` | 使用する Gemini モデル |
 
 ---
 
-### Step 1: Export Untagged Products to Cloud Storage
+### Step 1: 未処理商品を Cloud Storage にエクスポート
 
-Run the following query in BigQuery to generate formatted JSONL files in Cloud Storage. This wraps the request inside the official Vertex AI `request` object and embeds the product ID for correlation.
+BigQuery で以下のクエリを実行し、GCS上にバッチ推論用の JSONL を出力します。Vertex AI Gemini の公式仕様に準拠し、最上位に `"request"` オブジェクトを配置し、後続の突合用にプロンプト内に `- 商品ID:` を埋め込みます。
 
 ```sql
 DECLARE bucket_name STRING DEFAULT 'catalog_enrichment_bigquery';
@@ -122,15 +122,15 @@ WHERE
 
 ---
 
-### Step 2: Submit Vertex AI Batch Prediction Job
+### Step 2: Vertex AI Batch Prediction ジョブの投入
 
-#### Option A: Python Script
-Run [`submit_batch_job.py`](submit_batch_job.py):
+#### 選択肢 A: Python スクリプトで実行
+[`submit_batch_job.py`](submit_batch_job.py) を実行します：
 ```bash
 python3 submit_batch_job.py
 ```
 
-#### Option B: REST API (`curl`)
+#### 選択肢 B: REST API (`curl`) で直接実行
 ```bash
 PROJECT_ID="retail-search-jp-demo-minsoo"
 LOCATION="us-central1"
@@ -158,26 +158,26 @@ curl -X POST \
   }"
 ```
 
-#### Option C: Google Cloud Console
-1. Navigate to **Vertex AI > Batch Predictions**.
-2. Click **Create**, select the Gemini model (e.g. `gemini-2.5-flash`).
-3. Set input path to `gs://catalog_enrichment_bigquery/batch_input/products_*.jsonl`.
-4. Set output path to `gs://catalog_enrichment_bigquery/batch_output/` and submit.
+#### 選択肢 C: Google Cloud コンソール（Web画面）から実行
+1. **Vertex AI** > **バッチ予測 (Batch Predictions)** を開きます。
+2. **作成 (CREATE)** をクリックし、モデル（`gemini-2.5-flash`）を選択します。
+3. 入力元: `gs://catalog_enrichment_bigquery/batch_input/products_*.jsonl`
+4. 出力先: `gs://catalog_enrichment_bigquery/batch_output/` を指定して **送信** をクリックします。
 
 ---
 
-### Step 3: Load Predictions into BigQuery Temp Table
+### Step 3: 予測結果を BigQuery 一時テーブルにロード
 
-Once the batch job succeeds, load the output into a temporary staging table in BigQuery:
+バッチ完了後、出力された JSONL を BigQuery の一時テーブルにロードします（重複防止のため `--replace=true` を指定）：
 
 ```bash
 BUCKET_NAME="catalog_enrichment_bigquery"
 
-# Find the latest output file path generated by Vertex AI
+# 最新の出力ファイルパスを変数に取得
 OUTPUT_URI=$(gcloud storage ls "gs://${BUCKET_NAME}/batch_output/**/predictions*.jsonl" | tail -n 1)
-echo "Loading: ${OUTPUT_URI}"
+echo "ロード対象ファイル: ${OUTPUT_URI}"
 
-# Load into BigQuery with --replace=true to avoid duplicate rows
+# BigQuery 一時テーブルへロード（上書きモード）
 bq load \
   --project_id=retail-search-jp-demo-minsoo \
   --replace=true \
@@ -189,20 +189,20 @@ bq load \
 
 ---
 
-### Step 4: Bulk UPDATE Catalog Attributes
+### Step 4: 本番カタログテーブルへの一括 UPDATE
 
-Apply the generated tags back into the production catalog table. This query safely deduplicates rows using `QUALIFY`, parses the JSON array, and updates the `attributes` RECORD in seconds:
+一時テーブルの結果から商品IDとタグ配列をパースし、重複を排除（`QUALIFY`）した上で本番テーブルの `attributes` に高速反映します：
 
 ```sql
 UPDATE `retail-search-jp-demo-minsoo.retail_search.d-vais-c` AS target
 SET attributes = ARRAY_CONCAT(
-  -- Retain all existing attributes other than 'tags'
+  -- 既存のattributesから'tags'以外の属性を保持
   ARRAY(
     SELECT AS STRUCT a.*
     FROM UNNEST(COALESCE(target.attributes, [])) AS a
     WHERE a.key != 'tags'
   ),
-  -- Append newly generated tags attribute
+  -- 新規生成されたtags属性を追加 (key: 'tags', value.text: [...], value.numbers: [])
   [STRUCT(
     'tags' AS key,
     STRUCT(
@@ -213,12 +213,12 @@ SET attributes = ARRAY_CONCAT(
 )
 FROM (
   SELECT
-    -- Extract product ID embedded in the request prompt
+    -- プロンプト内のテキストから商品IDを抽出
     REGEXP_EXTRACT(
       request.contents[SAFE_OFFSET(0)].parts[SAFE_OFFSET(0)].text,
       r'- 商品ID:\s*([^\n\r]+)'
     ) AS id,
-    -- Parse generated tags array
+    -- レスポンステキストからタグ配列を抽出
     JSON_EXTRACT_STRING_ARRAY(
       TRIM(REGEXP_REPLACE(response.candidates[SAFE_OFFSET(0)].content.parts[SAFE_OFFSET(0)].text, r'^```(?:json)?|```$', '')),
       '$.tags'
@@ -227,7 +227,7 @@ FROM (
     `retail-search-jp-demo-minsoo.retail_search.temp_batch_prediction_results`
   WHERE
     response.candidates[SAFE_OFFSET(0)].content.parts[SAFE_OFFSET(0)].text IS NOT NULL
-  -- Ensure unique source row per product ID
+  -- 重複レコードを排除し、各商品IDごとに最新1件に絞り込む（UPDATEエラー完全防止）
   QUALIFY ROW_NUMBER() OVER(PARTITION BY id ORDER BY processed_time DESC) = 1
 ) AS source
 WHERE
@@ -238,9 +238,9 @@ WHERE
 
 ---
 
-### Step 5: Verify Results
+### Step 5: 反映結果の確認
 
-Inspect the updated attributes in BigQuery:
+本番テーブルの `attributes` にタグが正しく追加されたかを検証します：
 
 ```sql
 SELECT 
@@ -256,9 +256,9 @@ LIMIT 5;
 
 ---
 
-## Cost & Token Audit Query
+## コストおよびトークン消費量の監査クエリ
 
-Estimate exact token usage and billing costs directly from the prediction output before the monthly invoice is compiled:
+バッチ完了後、結果テーブルの `usageMetadata` から実際のトークン数とUSD費用を即座に算出できます：
 
 ```sql
 SELECT
@@ -267,8 +267,8 @@ SELECT
   SUM(response.usageMetadata.candidatesTokenCount) AS total_output_tokens,
   SUM(response.usageMetadata.totalTokenCount) AS grand_total_tokens,
   
-  -- Gemini 2.5 Flash Batch Prediction pricing (50% discount):
-  -- Input: $0.0375 / 1M tokens, Output: $0.15 / 1M tokens
+  -- Gemini 2.5 Flash バッチ50%割引料金基準:
+  -- 入力: $0.0375 / 100万トークン, 出力: $0.15 / 100万トークン
   ROUND(
     (SUM(response.usageMetadata.promptTokenCount) / 1000000.0 * 0.0375) +
     (SUM(response.usageMetadata.candidatesTokenCount) / 1000000.0 * 0.15),
@@ -278,23 +278,23 @@ FROM
   `retail-search-jp-demo-minsoo.retail_search.temp_batch_prediction_results`;
 ```
 
-*Typical benchmark: Processing 1,000 product items consumes ~350K tokens, resulting in approximately **$0.03 ~ $0.05 USD**.*
+*目安: 商品データ 1,000件あたりの消費量は約30万〜40万トークンとなり、**約 $0.03 〜 $0.05（日本円で約5〜8円程度）**と極めて安価です。*
 
 ---
 
-## Troubleshooting Guide
+## トラブルシューティング
 
-| Issue / Error | Cause | Resolution |
+| エラー内容 / 現象 | 原因 | 対処法 |
 |---|---|---|
-| `The lines in the specified input JSONL file must contain the "request" property.` | Root JSON object was missing the `"request"` property. | Wrap prompt contents and config in `STRUCT(...) AS request` in Step 1 SQL. |
-| `Not found: Uris gs://.../prediction.results-*.jsonl` | Output directory contains dynamic timestamp folder; `bq load` does not support wildcards in folder paths. | Use `OUTPUT_URI=$(gcloud storage ls ... \| tail -n 1)` to fetch the exact file path. |
-| `UPDATE/MERGE must match at most one source row for each target row` | `bq load` was run multiple times without `--replace`, creating duplicate rows for the same product ID. | Use `QUALIFY ROW_NUMBER() OVER(PARTITION BY id ...) = 1` in Step 4, and pass `--replace=true` in `bq load`. |
-| Tags appear missing in raw JSONL | In raw JSONL, tags are nested and escaped under `response.candidates[0].content.parts[0].text`. | Normal behavior. Extract using BigQuery's `JSON_EXTRACT_STRING_ARRAY` in Step 4. |
+| **`The lines in the specified input JSONL file must contain the "request" property.`** | Cloud Storage入力用JSONLの各行に、最上位の `"request"` ラッパーが存在しない。 | Step 1のSQLのように、`STRUCT(...) AS request` で囲んでエクスポートする。 |
+| **`Not found: Uris gs://.../prediction.results-*.jsonl`** | Vertex AIが動的タイムスタンプフォルダを作成し、`bq load` がディレクトリ階層のワイルドカード(`*`)に対応していない。 | Step 3のように `OUTPUT_URI=$(gcloud storage ls ... \| tail -n 1)` で実際のパスを取得してロードする。 |
+| **`UPDATE/MERGE must match at most one source row for each target row`** | `bq load` を複数回実行した等により、一時テーブル内に同一商品IDが重複蓄積している。 | Step 4のSQLに含まれている `QUALIFY ROW_NUMBER() OVER(...) = 1` を使用し、`bq load --replace=true` でロードする。 |
+| **生JSONLで tags が見当たらない** | 生のJSONLでは、`response.candidates[0].content.parts[0].text` 内にJSON文字列としてエスケープ格納されている。 | 正常に出力されています。Step 4の `JSON_EXTRACT_STRING_ARRAY` を使ってBigQuery上で展開・抽出してください。 |
 
 ---
 
-## References
+## 関連ドキュメント
 
-- [Vertex AI Batch Prediction Documentation](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-gemini)
-- [Google Cloud Retail API Catalog Attributes Specification](https://cloud.google.com/retail/docs/catalog)
-- [Japanese Implementation Guide (日本語詳細ガイド)](vertex_ai_batch_prediction_guide_ja.md)
+- [Vertex AI Batch Prediction 公式ドキュメント](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-gemini)
+- [Google Cloud Retail API カタログ属性 仕様](https://cloud.google.com/retail/docs/catalog)
+- [詳細パイプライン実装ガイド (`vertex_ai_batch_prediction_guide_ja.md`)](vertex_ai_batch_prediction_guide_ja.md)

@@ -12,12 +12,12 @@
 
 ```mermaid
 flowchart TD
-    subgraph パス 1: BigQuery ML 直接呼び出し（中小規模: 数万件程度まで）
+    subgraph path1 ["パス 1: BigQuery ML 直接呼び出し（中小規模: 数万件程度まで）"]
         A1["BigQuery 商品カタログテーブル<br/>(id, title, attributes)"] -->|"ML.GENERATE_TEXT<br/>(リモートモデル)"| B1["Gemini Flash 推論"]
         B1 -->|"インプレース UPDATE"| A1
     end
 
-    subgraph パス 2: Vertex AI Batch Prediction（大規模: 5万件〜数百万件）
+    subgraph path2 ["パス 2: Vertex AI Batch Prediction（大規模: 5万件〜数百万件）"]
         A2["BigQuery 商品カタログテーブル"] -->|"Step 1: EXPORT DATA (JSONL)"| B2["Cloud Storage (GCS)"]
         B2 -->|"Step 2: Vertex AI バッチ予測<br/>(料金50%割引 / RPM制限なし)"| C2["Gemini Flash バッチ推論"]
         C2 -->|"Step 3: bq load --replace"| D2["BigQuery 一時テーブル"]

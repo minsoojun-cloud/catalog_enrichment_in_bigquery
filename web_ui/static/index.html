@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Commerce Search - カタログスキーママッピング ＆ Google Search/Gemini Enrichment</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="min-h-screen flex flex-col">
+
+    <!-- Top Navigation Bar -->
+    <header class="bg-slate-900 text-white shadow-md sticky top-0 z-40">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center space-x-3">
+                <div class="bg-blue-600 p-2 rounded-lg shadow">
+                    <i class="fa-solid fa-wand-magic-sparkles text-xl text-white"></i>
+                </div>
+                <div>
+                    <h1 class="text-lg font-bold tracking-tight flex items-center gap-2">
+                        AI Commerce Search Catalog Mapper & Enricher
+                        <span class="text-xs bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2 py-0.5 rounded-full font-medium">BigQuery Schema v1</span>
+                    </h1>
+                    <p class="text-xs text-slate-400">CSV / JSONL 商品データのスキーママッピングおよび Google Search Grounding + Gemini マルチルール Enrichment</p>
+                </div>
+            </div>
+
+            <!-- Global Project & Model Settings -->
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+                <div class="flex items-center bg-slate-800 border border-slate-700 rounded-md px-2.5 py-1.5">
+                    <span class="text-slate-400 mr-1.5"><i class="fa-solid fa-cloud text-blue-400 mr-1"></i>Project:</span>
+                    <input id="globalProjectId" type="text" value="retail-search-jp-demo-minsoo" class="bg-transparent text-white font-mono focus:outline-none w-48" title="GCP Project ID">
+                </div>
+                <div class="flex items-center bg-slate-800 border border-slate-700 rounded-md px-2.5 py-1.5">
+                    <span class="text-slate-400 mr-1.5"><i class="fa-solid fa-microchip text-emerald-400 mr-1"></i>Gemini:</span>
+                    <select id="globalModelName" class="bg-slate-800 text-white font-medium focus:outline-none cursor-pointer">
+                        <option value="gemini-2.5-flash" selected>gemini-2.5-flash (推奨)</option>
+                        <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                        <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                    </select>
+                </div>
+
+                <!-- Config Save / Load Buttons -->
+                <button onclick="exportConfiguration()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 transition" title="現在のマッピングおよびプロンプト設定をJSONとして保存">
+                    <i class="fa-solid fa-download text-blue-400"></i> 設定保存
+                </button>
+                <label class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 px-3 py-1.5 rounded-md flex items-center gap-1.5 cursor-pointer transition" title="保存済みの設定JSONファイルを読み込み">
+                    <i class="fa-solid fa-upload text-emerald-400"></i> 設定読込
+                    <input type="file" id="configFileInput" accept=".json" class="hidden" onchange="importConfiguration(event)">
+                </label>
+                <button onclick="openSchemaModal()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-2.5 py-1.5 rounded-md transition" title="AI Commerce Search BigQuery 全体スキーマ定義を表示">
+                    <i class="fa-solid fa-book-open"></i> スキーマ定義
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Workspace Container -->
+    <main class="flex-grow max-w-7xl w-full mx-auto px-4 py-6 space-y-8">
+
+        <!-- STEP 1: Data Input (CSV / JSONL Upload & Preview) -->
+        <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="bg-slate-50 border-b border-slate-200 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center space-x-3">
+                    <span class="flex items-center justify-center w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-sm">1</span>
+                    <div>
+                        <h2 class="text-base font-bold text-slate-800">元商品データの入力 (CSV または JSONL)</h2>
+                        <p class="text-xs text-slate-500">変換する商品カタログファイルをアップロードするか、サンプルデータを読み込んでマッピングを開始してください。</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick="loadSampleData()" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-medium text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm">
+                        <i class="fa-solid fa-bolt text-indigo-600"></i> EDION 家電サンプルデータをロード (5件)
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-6 space-y-5">
+                <!-- Dropzone & File Input -->
+                <div id="dropzone" class="border-2 border-dashed border-slate-300 hover:border-blue-500 rounded-xl p-6 text-center transition cursor-pointer bg-slate-50/50 hover:bg-blue-50/20" onclick="document.getElementById('fileInput').click()">
+                    <input type="file" id="fileInput" accept=".csv,.jsonl,.json,.ndjson,.tsv" class="hidden" onchange="handleFileUpload(event)">
+                    <div class="flex flex-col items-center justify-center space-y-2">
+                        <div class="w-12 h-12 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-file-arrow-up"></i>
+                        </div>
+                        <div class="text-sm font-semibold text-slate-700">
+                            CSV または JSONL ファイルをここにドラッグ＆ドロップするか、<span class="text-blue-600 underline">クリックして選択</span>してください
+                        </div>
+                        <p class="text-xs text-slate-400">対応フォーマット: .csv, .jsonl, .json (UTF-8, Shift-JIS, CP932 自動判定)</p>
+                    </div>
+                </div>
+
+                <!-- Uploaded Dataset Info Bar -->
+                <div id="datasetInfoBar" class="hidden bg-slate-100 border border-slate-200 rounded-lg p-4 flex flex-wrap items-center justify-between gap-4">
+                    <div class="flex items-center space-x-3">
+                        <i class="fa-solid fa-table text-blue-600 text-lg"></i>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span id="datasetFilename" class="font-bold text-sm text-slate-800">edion_sample_catalog.csv</span>
+                                <span id="datasetRowCount" class="bg-blue-100 text-blue-800 text-xs font-semibold px-2 py-0.5 rounded-full">5 行</span>
+                            </div>
+                            <div id="datasetColumnsList" class="text-xs text-slate-500 mt-1 flex flex-wrap gap-1"></div>
+                        </div>
+                    </div>
+                    <button onclick="togglePreviewTable()" class="text-xs text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1">
+                        <i class="fa-solid fa-eye"></i> <span id="previewToggleText">元データプレビューの表示切替</span>
+                    </button>
+                </div>
+
+                <!-- Source Data Preview Table -->
+                <div id="sourcePreviewContainer" class="hidden border border-slate-200 rounded-lg overflow-hidden">
+                    <div class="bg-slate-100 px-4 py-2 border-b border-slate-200 flex items-center justify-between text-xs font-semibold text-slate-600">
+                        <span>入力元データサンプル (先頭 5行)</span>
+                        <span class="text-slate-400">横スクロール可能</span>
+                    </div>
+                    <div class="overflow-x-auto max-h-64">
+                        <table class="w-full text-left border-collapse text-xs">
+                            <thead id="sourcePreviewHead" class="bg-slate-50 border-b border-slate-200 text-slate-600 sticky top-0"></thead>
+                            <tbody id="sourcePreviewBody" class="divide-y divide-slate-200"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- STEP 2: AI Commerce Search BigQuery Schema Field Mapping UI -->
+        <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="bg-slate-50 border-b border-slate-200 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center space-x-3">
+                    <span class="flex items-center justify-center w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-sm">2</span>
+                    <div>
+                        <h2 class="text-base font-bold text-slate-800">AI Commerce Search BigQuery Schema 項目マッチング設定</h2>
+                        <p class="text-xs text-slate-500">入力データの各カラムを AI Commerce Search BigQuery スキーマのどの項目とマッチングさせるか設定します。必須項目（<span class="text-red-600 font-semibold">id, title</span>）は必ず設定してください。</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button onclick="autoSuggestMappings()" class="bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 font-medium text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+                        <i class="fa-solid fa-wand-sparkles"></i> カラム名に基づく自動マッチング推奨
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-6 space-y-4">
+                <!-- Group Filter Tabs & Search -->
+                <div class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
+                    <div class="flex flex-wrap gap-1.5" id="schemaGroupTabs">
+                        <button onclick="filterSchemaGroup('ALL')" class="schema-tab active px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 text-white transition" data-group="ALL">全項目 (31)</button>
+                        <button onclick="filterSchemaGroup('Core')" class="schema-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition" data-group="Core">必須・基本 (Core)</button>
+                        <button onclick="filterSchemaGroup('Classification & Search')" class="schema-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition" data-group="Classification & Search">カテゴリ・検索タグ</button>
+                        <button onclick="filterSchemaGroup('Pricing & Stock')" class="schema-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition" data-group="Pricing & Stock">価格・在庫 (Price/Stock)</button>
+                        <button onclick="filterSchemaGroup('Details & Attributes')" class="schema-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition" data-group="Details & Attributes">商品説明・属性 (Attributes)</button>
+                        <button onclick="filterSchemaGroup('Media & Rating')" class="schema-tab px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-100 hover:bg-slate-200 text-slate-700 transition" data-group="Media & Rating">画像・レビュー評価</button>
+                    </div>
+                    <div class="relative w-64">
+                        <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                        <input type="text" id="schemaSearchInput" oninput="renderSchemaMappingTable()" placeholder="スキーマ項目名を検索 (例: tags, price)..." class="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-300 rounded-lg focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <!-- Mapping Table -->
+                <div class="border border-slate-200 rounded-lg overflow-hidden">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead class="bg-slate-100 border-b border-slate-200 text-slate-700 font-semibold">
+                            <tr>
+                                <th class="py-3 px-4 w-1/4">AI Commerce Search スキーマ項目</th>
+                                <th class="py-3 px-3 w-28">型 / モード</th>
+                                <th class="py-3 px-3 w-44">マッチング方式 (Mapping Mode)</th>
+                                <th class="py-3 px-4 w-1/4">割り当てる入力カラム または 固定デフォルト値</th>
+                                <th class="py-3 px-4">Enrichment 連携状況 ＆ 説明</th>
+                            </tr>
+                        </thead>
+                        <tbody id="schemaMappingTableBody" class="divide-y divide-slate-200 bg-white">
+                            <!-- Dynamically populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- STEP 3: Multi-Rule Google Search & Gemini Enrichment Table (画面下部テーブルリスト) -->
+        <section class="bg-white rounded-xl shadow-md border-2 border-blue-500/30 overflow-hidden">
+            <div class="bg-gradient-to-r from-blue-900 via-indigo-900 to-slate-900 text-white px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center space-x-3">
+                    <span class="flex items-center justify-center w-7 h-7 rounded-full bg-emerald-500 text-white font-bold text-sm shadow">3</span>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-base font-bold">Google Search ＆ Gemini マルチルール Enrichment 設定</h2>
+                            <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 text-xs px-2.5 py-0.5 rounded-full font-medium">複数項目リスト追加可能</span>
+                        </div>
+                        <p class="text-xs text-blue-200 mt-0.5">入力項目のうち参照するカラムを指定し、Google Search（Web検索）および Gemini プロンプトを用いて結果を格納する AI Commerce Search スキーマ項目を設定します。</p>
+                    </div>
+                </div>
+
+                <!-- Preset Selector & Add Rule Button -->
+                <div class="flex flex-wrap items-center gap-2">
+                    <div class="flex items-center bg-slate-800/90 border border-blue-400/40 rounded-lg p-1">
+                        <select id="presetSelect" class="bg-transparent text-xs text-white px-2.5 py-1.5 focus:outline-none cursor-pointer">
+                            <option value="" class="bg-slate-800">-- 推奨 Enrichment プリセットを選択 --</option>
+                        </select>
+                        <button onclick="addPresetRule()" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-md flex items-center gap-1 transition">
+                            <i class="fa-solid fa-plus"></i> プリセット追加
+                        </button>
+                    </div>
+                    <button onclick="addBlankEnrichmentRule()" class="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow transition">
+                        <i class="fa-solid fa-plus-circle"></i> 新規 Enrichment ルールを直接追加
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-6 space-y-4">
+                <!-- Helper Notice -->
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-3.5 flex items-start gap-3 text-xs text-blue-900">
+                    <i class="fa-solid fa-circle-info text-blue-600 text-base mt-0.5"></i>
+                    <div class="space-y-1">
+                        <p class="font-semibold">Enrichment マルチルールテーブル利用ガイド:</p>
+                        <ul class="list-disc list-inside space-y-0.5 text-blue-800">
+                            <li>下のテーブルに<strong>複数の Enrichment 項目をリスト形式で追加</strong>し、同時に複数のスキーマ項目（例: <code>tags</code>, <code>description</code>, <code>attributes</code>, <code>categories</code> 等）を生成・補強できます。</li>
+                            <li>各行の <strong>[✏️ プロンプト設定]</strong> ボタンをクリックして、詳細な指示文や参照変数（<code>{title}</code>, <code>{brands}</code> 等）を自由にカスタマイズしてください。</li>
+                            <li>一括実行前に各行右側の <strong>[⚡ 1行テスト]</strong> ボタンを押すと、実際の Google Search 検索クエリと Gemini 生成結果を即座に確認・検証できます。</li>
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Enrichment Rules Table List -->
+                <div class="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead class="bg-slate-100 border-b border-slate-200 text-slate-700 font-bold">
+                            <tr>
+                                <th class="py-3 px-3 w-12 text-center">有効</th>
+                                <th class="py-3 px-3 w-48">Enrichment タスク名</th>
+                                <th class="py-3 px-3 w-56">使用する入力項目 (Source Columns)</th>
+                                <th class="py-3 px-3 w-36 text-center">Google Search 連携</th>
+                                <th class="py-3 px-3 w-52">結果格納スキーマ項目 (Target Field)</th>
+                                <th class="py-3 px-3 w-36">出力データ形式</th>
+                                <th class="py-3 px-4">プロンプト設定 (Prompt)</th>
+                                <th class="py-3 px-3 w-36 text-center">即時テスト ＆ 管理</th>
+                            </tr>
+                        </thead>
+                        <tbody id="enrichmentRulesTableBody" class="divide-y divide-slate-200 bg-white">
+                            <!-- Dynamically rendered rows -->
+                        </tbody>
+                    </table>
+
+                    <!-- Empty State if no rules -->
+                    <div id="emptyRulesState" class="hidden p-8 text-center text-slate-400">
+                        <i class="fa-solid fa-layer-group text-3xl mb-2 text-slate-300"></i>
+                        <p class="text-sm font-medium text-slate-600">設定されている Enrichment ルールがありません。</p>
+                        <p class="text-xs mt-1">上部の <strong>[+ プリセット追加]</strong> または <strong>[+ 新規 Enrichment ルールを直接追加]</strong> ボタンからルールを追加してください。</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- STEP 4: Execution, Progress & BigQuery Export -->
+        <section class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
+            <div class="bg-slate-50 border-b border-slate-200 px-6 py-4 flex flex-wrap items-center justify-between gap-4">
+                <div class="flex items-center space-x-3">
+                    <span class="flex items-center justify-center w-7 h-7 rounded-full bg-blue-600 text-white font-bold text-sm">4</span>
+                    <div>
+                        <h2 class="text-base font-bold text-slate-800">データ変換実行 ＆ AI Commerce Search BigQuery データ生成</h2>
+                        <p class="text-xs text-slate-500">設定したマッピングおよび複数の Enrichment ルールを実行し、BigQuery Schema 準拠の JSONL データを生成します。</p>
+                    </div>
+                </div>
+
+                <!-- Execution Controls -->
+                <div class="flex flex-wrap items-center gap-3">
+                    <div class="flex items-center space-x-2 text-xs">
+                        <label class="text-slate-600 font-medium">処理件数:</label>
+                        <select id="batchRowLimit" class="border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white text-slate-700 font-medium focus:outline-none">
+                            <option value="3">クイック検証 (先頭 3件)</option>
+                            <option value="5" selected>サンプル全件 (先頭 5件)</option>
+                            <option value="20">先頭 20件</option>
+                            <option value="100">先頭 100件</option>
+                            <option value="0">全データ (All Rows)</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center space-x-2 text-xs">
+                        <label class="text-slate-600 font-medium">並列実行数:</label>
+                        <select id="batchConcurrency" class="border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white text-slate-700 font-medium focus:outline-none">
+                            <option value="2">2並列</option>
+                            <option value="5" selected>5並列 (推奨)</option>
+                            <option value="10">10並列</option>
+                        </select>
+                    </div>
+                    <button id="startBatchBtn" onclick="startBatchProcessing()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-5 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
+                        <i class="fa-solid fa-play"></i> データマッピング ＆ Enrichment 一括実行
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-6 space-y-6">
+                <!-- Progress Panel (Hidden until job starts) -->
+                <div id="batchProgressPanel" class="hidden bg-slate-900 text-white rounded-xl p-5 space-y-4 shadow-inner">
+                    <div class="flex flex-wrap items-center justify-between gap-4">
+                        <div class="flex items-center space-x-3">
+                            <div id="jobSpinner" class="w-5 h-5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin"></div>
+                            <div>
+                                <span id="jobStatusTitle" class="font-bold text-sm">AI Enrichment およびスキーマ変換を実行中...</span>
+                                <p id="jobStatusSubtitle" class="text-xs text-slate-400">Google Search Grounding および Gemini API を呼び出しています。</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center space-x-4 text-xs">
+                            <div class="bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700">
+                                進捗: <span id="jobProcessedCount" class="font-bold text-blue-400">0</span> / <span id="jobTotalCount">0</span> 件
+                            </div>
+                            <div class="bg-emerald-950/60 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-700/50">
+                                スキーマ検証パス: <span id="jobSuccessCount" class="font-bold">0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-slate-800 h-3 rounded-full overflow-hidden p-0.5 border border-slate-700">
+                        <div id="jobProgressBar" class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+                    </div>
+
+                    <!-- Live Console Logs -->
+                    <div class="bg-black/60 rounded-lg p-3 border border-slate-800 font-mono text-xs text-slate-300 max-h-40 overflow-y-auto space-y-1" id="jobLogConsole"></div>
+                </div>
+
+                <!-- Final Results & BigQuery Export Toolbar -->
+                <div id="batchResultsPanel" class="hidden space-y-4">
+                    <div class="bg-emerald-50 border border-emerald-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-10 h-10 rounded-full bg-emerald-600 text-white flex items-center justify-center text-lg shadow">
+                                <i class="fa-solid fa-check"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-bold text-emerald-950">AI Commerce Search BigQuery スキーマデータの生成が完了しました！</h3>
+                                <p class="text-xs text-emerald-700">変換前後のデータを比較確認し、BigQuery ロード用の JSONL ファイルをダウンロードしてください。</p>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-wrap items-center gap-2.5">
+                            <button onclick="downloadBigQueryJsonl()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
+                                <i class="fa-solid fa-file-arrow-down"></i> BigQuery JSONL ダウンロード (.jsonl)
+                            </button>
+                            <button onclick="openBigQueryLoadModal()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
+                                <i class="fa-solid fa-cloud-arrow-up"></i> BigQuery テーブルへ直接ロード (Load)
+                            </button>
+                            <button onclick="copyBqCliCommand()" class="bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-semibold text-xs px-3.5 py-2.5 rounded-lg flex items-center gap-1.5 transition">
+                                <i class="fa-solid fa-terminal"></i> bq load コマンドをコピー
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Processed Results Table -->
+                    <div class="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                        <div class="bg-slate-100 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-700">
+                            <span>生成された BigQuery Schema データ一覧 (クリックで詳細 JSON 比較)</span>
+                            <span id="resultsSummaryText" class="text-blue-600"></span>
+                        </div>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse text-xs">
+                                <thead class="bg-slate-50 border-b border-slate-200 text-slate-600">
+                                    <tr>
+                                        <th class="py-2.5 px-4 w-12">#</th>
+                                        <th class="py-2.5 px-4 w-32">id (REQUIRED)</th>
+                                        <th class="py-2.5 px-4 w-64">title (REQUIRED)</th>
+                                        <th class="py-2.5 px-4">生成された検索タグ (tags / attributes.tags)</th>
+                                        <th class="py-2.5 px-4 w-64">補強された説明文 ＆ 属性 (description / attributes)</th>
+                                        <th class="py-2.5 px-4 w-28 text-center">スキーマ検証</th>
+                                        <th class="py-2.5 px-4 w-28 text-center">JSON 詳細</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="processedResultsTableBody" class="divide-y divide-slate-200 bg-white"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-white border-t border-slate-200 py-4 mt-12">
+        <div class="max-w-7xl mx-auto px-4 flex flex-wrap items-center justify-between text-xs text-slate-400">
+            <div>Google Cloud AI Commerce Search (Vertex AI Search for Retail) BigQuery Data Mapper & Enricher</div>
+            <div>Powered by Gemini & Google Search Grounding</div>
+        </div>
+    </footer>
+
+
+    <!-- ============================================================================ -->
+    <!-- MODAL 1: Prompt Configuration & Variable Editor Modal -->
+    <!-- ============================================================================ -->
+    <div id="promptModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-3xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center space-x-2.5">
+                    <i class="fa-solid fa-pen-to-square text-blue-400 text-lg"></i>
+                    <h3 class="font-bold text-base" id="promptModalTitle">Enrichment プロンプト設定・編集</h3>
+                </div>
+                <button onclick="closePromptModal()" class="text-slate-400 hover:text-white text-lg">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="p-6 overflow-y-auto space-y-4 flex-grow">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs">
+                    <div>
+                        <span class="text-slate-500 font-medium">対象スキーマ項目:</span>
+                        <span id="promptModalTargetField" class="ml-1.5 font-bold text-blue-700 font-mono">tags</span>
+                    </div>
+                    <div>
+                        <span class="text-slate-500 font-medium">出力データ形式:</span>
+                        <span id="promptModalOutputFormat" class="ml-1.5 font-bold text-emerald-700">JSON 文字列配列</span>
+                    </div>
+                </div>
+
+                <!-- Variable Insertion Helper Chips -->
+                <div class="space-y-1.5">
+                    <label class="text-xs font-bold text-slate-700 flex items-center justify-between">
+                        <span>クリックしてプロンプトに入力項目変数を挿入 (実行時に各行のデータに置換されます):</span>
+                        <span class="text-slate-400 font-normal">カーソル位置に挿入</span>
+                    </label>
+                    <div id="promptVariableChips" class="flex flex-wrap gap-1.5 p-2.5 bg-slate-100 rounded-lg border border-slate-200">
+                        <!-- Dynamically populated variable buttons e.g. {title}, {brands}, {p_cd} -->
+                    </div>
+                </div>
+
+                <!-- Prompt Textarea -->
+                <div class="space-y-1.5">
+                    <label class="text-xs font-bold text-slate-700">Gemini プロンプト指示文 (Prompt Template):</label>
+                    <textarea id="promptModalTextarea" rows="12" class="w-full p-3.5 text-xs font-mono border border-slate-300 rounded-xl focus:outline-none focus:border-blue-600 bg-slate-900 text-slate-100 leading-relaxed" placeholder="プロンプト内容を入力してください..."></textarea>
+                </div>
+            </div>
+
+            <div class="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex items-center justify-between">
+                <span class="text-xs text-slate-500"><i class="fa-solid fa-lightbulb text-amber-500 mr-1"></i>ヒント: 出力形式を明確に指定すると JSON パースの精度が向上します。</span>
+                <div class="flex items-center space-x-2">
+                    <button onclick="closePromptModal()" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200 transition">キャンセル</button>
+                    <button onclick="savePromptModal()" class="px-5 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow transition">プロンプトを適用</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ============================================================================ -->
+    <!-- MODAL 2: Single Row Test Inspector Modal (1行即時テスト結果確認) -->
+    <!-- ============================================================================ -->
+    <div id="testResultModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full overflow-hidden flex flex-col max-h-[92vh]">
+            <div class="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center space-x-2.5">
+                    <i class="fa-solid fa-vial-circle-check text-emerald-400 text-lg"></i>
+                    <div>
+                        <h3 class="font-bold text-base">Google Search ＆ Gemini Enrichment 1行テスト実行結果</h3>
+                        <p id="testModalSubtitle" class="text-xs text-blue-300"></p>
+                    </div>
+                </div>
+                <button onclick="closeTestResultModal()" class="text-slate-400 hover:text-white text-lg">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="p-6 overflow-y-auto space-y-5 flex-grow text-xs">
+                <!-- Loading State -->
+                <div id="testModalLoading" class="py-12 text-center space-y-3">
+                    <div class="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <p class="text-sm font-bold text-slate-700">Google Search Grounding 検索および Gemini 推論を実行中...</p>
+                    <p class="text-xs text-slate-400">リアルタイム Web 検索を通じて商品情報を収集・分析しています（約 2〜6 秒）</p>
+                </div>
+
+                <!-- Content State -->
+                <div id="testModalContent" class="hidden space-y-5">
+                    <!-- Search Grounding Metadata Box -->
+                    <div id="testGroundingBox" class="bg-blue-50/80 border border-blue-200 rounded-xl p-4 space-y-2.5">
+                        <div class="flex items-center justify-between">
+                            <span class="font-bold text-blue-950 flex items-center gap-1.5">
+                                <i class="fa-brands fa-google text-blue-600"></i> Google Search Grounding 実行情報
+                            </span>
+                            <span id="testElapsedBadge" class="bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded-full font-mono font-semibold"></span>
+                        </div>
+                        <div>
+                            <span class="text-slate-500 font-semibold">Gemini が実行した Web 検索クエリ:</span>
+                            <div id="testSearchQueriesList" class="flex flex-wrap gap-1.5 mt-1"></div>
+                        </div>
+                        <div>
+                            <span class="text-slate-500 font-semibold">参照した Web ソース (Grounding Chunks):</span>
+                            <div id="testSearchSourcesList" class="mt-1 space-y-1 max-h-24 overflow-y-auto"></div>
+                        </div>
+                    </div>
+
+                    <!-- Parsed Result & Target Schema Field -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="border border-emerald-300 bg-emerald-50/40 rounded-xl p-4 space-y-2">
+                            <div class="flex items-center justify-between">
+                                <span class="font-bold text-emerald-950 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-bullseye text-emerald-600"></i> スキーマ項目パース結果 (<code id="testTargetFieldBadge" class="font-mono text-blue-700"></code>)
+                                </span>
+                            </div>
+                            <pre id="testParsedOutput" class="bg-slate-900 text-emerald-300 p-3 rounded-lg overflow-x-auto code-preview max-h-60"></pre>
+                        </div>
+
+                        <div class="border border-slate-200 bg-slate-50 rounded-xl p-4 space-y-2">
+                            <span class="font-bold text-slate-700 flex items-center gap-1.5">
+                                <i class="fa-solid fa-robot text-indigo-600"></i> Gemini 生成テキスト原文 (Raw Response)
+                            </span>
+                            <pre id="testRawResponse" class="bg-white border border-slate-200 text-slate-700 p-3 rounded-lg overflow-x-auto code-preview max-h-60 whitespace-pre-wrap"></pre>
+                        </div>
+                    </div>
+
+                    <!-- Full BigQuery Row Preview -->
+                    <div class="border border-slate-200 rounded-xl overflow-hidden">
+                        <div class="bg-slate-100 px-4 py-2 border-b border-slate-200 font-bold text-slate-700 flex items-center justify-between">
+                            <span>最終 AI Commerce Search BigQuery スキーマ JSON プレビュー</span>
+                            <span id="testValidationBadge"></span>
+                        </div>
+                        <pre id="testFullBigqueryRow" class="bg-slate-950 text-blue-200 p-4 overflow-x-auto code-preview max-h-72"></pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-slate-50 px-6 py-3 border-t border-slate-200 flex justify-end">
+                <button onclick="closeTestResultModal()" class="px-5 py-2 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white transition">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ============================================================================ -->
+    <!-- MODAL 3: BigQuery Direct Load Modal -->
+    <!-- ============================================================================ -->
+    <div id="bqLoadModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-lg w-full overflow-hidden">
+            <div class="bg-blue-900 text-white px-6 py-4 flex items-center justify-between">
+                <div class="flex items-center space-x-2">
+                    <i class="fa-solid fa-database text-blue-300"></i>
+                    <h3 class="font-bold text-base">Google Cloud BigQuery テーブルへの直接ロード</h3>
+                </div>
+                <button onclick="closeBigQueryLoadModal()" class="text-blue-200 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-6 space-y-4 text-xs">
+                <p class="text-slate-600">生成完了した BigQuery Schema JSONL データを、指定した BigQuery テーブルへ直接ロード（格納）します。</p>
+                <div class="space-y-3">
+                    <div>
+                        <label class="font-bold text-slate-700 block mb-1">GCP Project ID:</label>
+                        <input type="text" id="bqLoadProject" value="retail-search-jp-demo-minsoo" class="w-full p-2.5 border border-slate-300 rounded-lg font-mono">
+                    </div>
+                    <div>
+                        <label class="font-bold text-slate-700 block mb-1">BigQuery Dataset ID:</label>
+                        <input type="text" id="bqLoadDataset" value="retail_search" class="w-full p-2.5 border border-slate-300 rounded-lg font-mono">
+                    </div>
+                    <div>
+                        <label class="font-bold text-slate-700 block mb-1">BigQuery Table ID:</label>
+                        <input type="text" id="bqLoadTable" value="d-vais-c" class="w-full p-2.5 border border-slate-300 rounded-lg font-mono">
+                    </div>
+                    <div>
+                        <label class="font-bold text-slate-700 block mb-1">書き込みオプション (Write Disposition):</label>
+                        <select id="bqLoadDisposition" class="w-full p-2.5 border border-slate-300 rounded-lg bg-white">
+                            <option value="WRITE_APPEND">WRITE_APPEND (既存テーブルにデータを追加)</option>
+                            <option value="WRITE_TRUNCATE">WRITE_TRUNCATE (既存データを上書き置換)</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="bqLoadStatusMsg" class="hidden p-3 rounded-lg font-medium"></div>
+            </div>
+            <div class="bg-slate-50 px-6 py-3.5 border-t border-slate-200 flex justify-end space-x-2">
+                <button onclick="closeBigQueryLoadModal()" class="px-4 py-2 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200">キャンセル</button>
+                <button id="bqLoadSubmitBtn" onclick="executeBigQueryLoad()" class="px-5 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white shadow flex items-center gap-1.5">
+                    <i class="fa-solid fa-cloud-arrow-up"></i> 今すぐロード実行
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ============================================================================ -->
+    <!-- MODAL 4: Full Schema Specification Reference Modal -->
+    <!-- ============================================================================ -->
+    <div id="schemaSpecModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+            <div class="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
+                <h3 class="font-bold text-base"><i class="fa-solid fa-file-code text-blue-400 mr-2"></i>AI Commerce Search BigQuery Schema 全体定義仕様</h3>
+                <button onclick="closeSchemaModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-6 overflow-y-auto flex-grow">
+                <pre id="schemaSpecJsonPre" class="bg-slate-950 text-emerald-300 p-4 rounded-xl code-preview overflow-x-auto"></pre>
+            </div>
+            <div class="bg-slate-50 px-6 py-3 border-t border-slate-200 flex justify-end">
+                <button onclick="closeSchemaModal()" class="px-5 py-2 rounded-lg text-xs font-bold bg-slate-800 text-white">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- ============================================================================ -->
+    <!-- MODAL 5: Row Detail JSON Comparison Modal -->
+    <!-- ============================================================================ -->
+    <div id="rowDetailModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-5xl w-full overflow-hidden flex flex-col max-h-[92vh]">
+            <div class="bg-slate-900 text-white px-6 py-4 flex items-center justify-between">
+                <h3 class="font-bold text-base" id="rowDetailModalTitle">商品変換前後の JSON 詳細比較</h3>
+                <button onclick="closeRowDetailModal()" class="text-slate-400 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4 flex-grow text-xs">
+                <div class="space-y-2">
+                    <span class="font-bold text-slate-700 block">1. 入力元データ (Source Row)</span>
+                    <pre id="rowDetailSourcePre" class="bg-slate-100 text-slate-800 p-4 rounded-xl code-preview overflow-x-auto max-h-[68vh] border border-slate-300"></pre>
+                </div>
+                <div class="space-y-2">
+                    <span class="font-bold text-blue-700 block">2. 変換・Enrichment 完了後の BigQuery Schema JSON</span>
+                    <pre id="rowDetailBqPre" class="bg-slate-950 text-emerald-300 p-4 rounded-xl code-preview overflow-x-auto max-h-[68vh]"></pre>
+                </div>
+            </div>
+            <div class="bg-slate-50 px-6 py-3 border-t border-slate-200 flex justify-end">
+                <button onclick="closeRowDetailModal()" class="px-5 py-2 rounded-lg text-xs font-bold bg-slate-800 text-white">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

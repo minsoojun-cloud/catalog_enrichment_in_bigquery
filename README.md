@@ -50,6 +50,43 @@ flowchart TD
 | [`prompt.txt`](prompt.txt) | 日本語EC検索の形態素・表記揺れ展開に特化してチューニングされたプロンプトテンプレート。 |
 | [`AI_Commerce_Search_Bigquery_schema.json`](AI_Commerce_Search_Bigquery_schema.json) | Google Cloud Retail Search 標準カタログの BigQuery スキーマ定義。 |
 | [`data_mapping.md`](data_mapping.md) | 元カタログHTML/データ項目と Retail API スキーマ型のマッピング仕様書。 |
+| [`web_ui/`](web_ui/README.md) | **AI Commerce Search カタログスキーママッピング ＆ Google Search + Gemini マルチルール Enrichment Web アプリケーション**。 |
+
+### 📂 ディレクトリ・ファイル構成 (Directory Structure)
+
+```text
+catalog_enrichment_in_bigquery/
+├── README.md                                   # プロジェクト全体ドキュメント (本ファイル)
+├── AI_Commerce_Search_Bigquery_schema.json     # Retail Search 標準 BigQuery スキーマ定義 (31項目)
+├── data_mapping.md                             # データ項目マッピング仕様書
+├── instructions.md                             # タスク要件・設計指針
+├── prompt.txt                                  # 検索タグ生成用プロンプト定義
+├── submit_batch_job.py                         # Vertex AI Batch Prediction 投入スクリプト
+├── test_enrichment_query.sql                   # BigQuery ML リモートモデル作成 ＆ テスト用 SELECT SQL
+├── update_enrichment_query.sql                 # BigQuery ML によるインプレース UPDATE SQL
+├── vertex_ai_batch_prediction_guide_ja.md      # 大規模バッチ予測パイプライン実装ガイド
+└── web_ui/                                     # Web ベースのデータマッピング ＆ マルチルール Enrichment アプリ
+    ├── README.md                               # Web UI 詳細ガイド
+    ├── run.sh                                  # Web サーバー起動スクリプト (Port 8080)
+    ├── requirements.txt                        # Python 依存パッケージ一覧
+    ├── venv/                                   # Python 3.11 仮想環境 (uv)
+    ├── app/                                    # FastAPI バックエンドソースコード
+    │   ├── __init__.py
+    │   ├── main.py                             # API エンドポイント (アップロード、1行テスト、バッチ実行、BQ直接ロード等)
+    │   ├── config.py                           # GCP プロジェクト・モデル設定
+    │   ├── schema_manager.py                   # BigQuery 31項目定義、自動マッチング推奨、日本語プリセットプロンプト6種
+    │   ├── enricher.py                         # Gemini + Google Search Grounding エンジン・JSONパーサー
+    │   ├── transformer.py                      # BigQuery スキーマフォーマット変換・バリデーション
+    │   └── sample_data.py                      # EDION 家電サンプルカタログデータ (5件)
+    ├── static/                                 # フロントエンド Web UI (日本語版 SPA)
+    │   ├── index.html                          # メインダッシュボード (マッピングUI ＆ 下部マルチ Enrichment テーブルリスト)
+    │   ├── css/
+    │   │   └── style.css                       # カスタムスタイルシート (Noto Sans JP)
+    │   └── js/
+    │       └── app.js                          # フロントエンド制御ロジック・API連携
+    └── tests/
+        └── test_app.py                         # 単体・統合テストスイート (pytest)
+```
 
 ---
 

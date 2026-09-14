@@ -215,6 +215,52 @@ function togglePreviewTable() {
 // STEP 2: BigQuery Schema Field Mapping UI
 // ============================================================================
 
+function toggleSchemaMappingSection() {
+    const body = document.getElementById("schemaMappingSectionBody");
+    const icon = document.getElementById("toggleSchemaSectionIcon");
+    const text = document.getElementById("toggleSchemaSectionText");
+    if (!body) return;
+
+    const isHidden = body.classList.toggle("hidden");
+    if (isHidden) {
+        if (icon) icon.className = "fa-solid fa-chevron-down text-blue-600";
+        if (text) text.textContent = "展開する";
+    } else {
+        if (icon) icon.className = "fa-solid fa-chevron-up text-slate-500";
+        if (text) text.textContent = "折りたたむ";
+    }
+}
+
+function updateSchemaMappingSummaryBadge(enrichedTargetMap) {
+    const badge = document.getElementById("schemaMappingSummaryBadge");
+    if (!badge) return;
+
+    let mappedCount = 0;
+    let idOk = false;
+    let titleOk = false;
+
+    APP_STATE.mappableFields.forEach((f) => {
+        const cfg = APP_STATE.mappingConfig[f.id] || {};
+        const hasCol = cfg.mode === "column" && cfg.source_column;
+        const hasStatic = cfg.mode === "static" && cfg.default_value;
+        const hasEnrich = enrichedTargetMap && enrichedTargetMap[f.id] && enrichedTargetMap[f.id].length > 0;
+
+        if (hasCol || hasStatic || hasEnrich) {
+            mappedCount++;
+            if (f.id === "id") idOk = true;
+            if (f.id === "title") titleOk = true;
+        }
+    });
+
+    if (idOk && titleOk) {
+        badge.className = "bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-semibold px-2.5 py-0.5 rounded-full";
+        badge.innerHTML = `<i class="fa-solid fa-check-circle mr-1"></i>設定済: ${mappedCount} 項目 (必須 id・title OK)`;
+    } else {
+        badge.className = "bg-amber-100 text-amber-800 border border-amber-200 text-xs font-semibold px-2.5 py-0.5 rounded-full";
+        badge.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-1"></i>設定済: ${mappedCount} 項目 (必須 id・title 要確認)`;
+    }
+}
+
 function filterSchemaGroup(groupName) {
     APP_STATE.activeSchemaGroup = groupName;
     document.querySelectorAll("#schemaGroupTabs .schema-tab").forEach((btn) => {
@@ -264,6 +310,8 @@ function renderSchemaMappingTable() {
             enrichedTargetMap[rule.target_field].push(rule.name);
         }
     });
+
+    updateSchemaMappingSummaryBadge(enrichedTargetMap);
 
     const filteredFields = APP_STATE.mappableFields.filter((f) => {
         if (APP_STATE.activeSchemaGroup !== "ALL" && f.group !== APP_STATE.activeSchemaGroup) {

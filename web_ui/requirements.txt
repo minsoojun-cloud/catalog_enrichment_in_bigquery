@@ -1,12 +1,18 @@
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-pydantic>=2.8.0
-pydantic-settings>=2.4.0
-python-multipart>=0.0.9
-google-genai>=1.0.0
-google-cloud-aiplatform>=1.60.0
-google-cloud-bigquery>=3.25.0
-google-auth>=2.30.0
-python-dotenv>=1.0.1
-httpx>=0.27.0
-pytest>=8.0.0
+# 本番 (Cloud Run) 用ランタイム依存パッケージ
+# バージョンはローカル検証済みのものに固定し、Cloud Run ビルドの再現性を確保する。
+# 開発・テスト用パッケージは requirements-dev.txt を参照。
+
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+pydantic==2.13.5
+python-multipart==0.0.32
+
+# Gemini (Vertex AI) + Google Search Grounding
+google-genai==2.23.0
+google-cloud-aiplatform==2.1.0
+
+# BigQuery ロードジョブ
+google-cloud-bigquery==3.45.0
+
+# 認証 (Cloud Run では ADC = アタッチしたサービスアカウントを自動利用)
+google-auth==2.58.0

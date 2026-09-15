@@ -15,7 +15,10 @@ let APP_STATE = {
     editingRuleIndex: null,
     currentJobId: null,
     jobPollInterval: null,
-    processedResults: []
+    processedResults: [],
+    // Full row count of the completed job. processedResults is capped at 20 by the
+    // backend preview, so this is what the JSONL export size/count must be based on.
+    totalProcessedRows: 0
 };
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -55,6 +58,17 @@ async function loadMetadata() {
         if (data.project_id) {
             document.getElementById("globalProjectId").value = data.project_id;
             document.getElementById("bqLoadProject").value = data.project_id;
+        }
+        if (data.default_model) {
+            const modelSelect = document.getElementById("globalModelName");
+            const exists = Array.from(modelSelect.options).some((o) => o.value === data.default_model);
+            if (!exists) {
+                const opt = document.createElement("option");
+                opt.value = data.default_model;
+                opt.textContent = `${data.default_model} (推奨)`;
+                modelSelect.insertBefore(opt, modelSelect.firstChild);
+            }
+            modelSelect.value = data.default_model;
         }
         if (data.default_dataset) {
             document.getElementById("bqLoadDataset").value = data.default_dataset;
@@ -96,6 +110,7 @@ function createRuleFromPreset(preset) {
         name: preset.name,
         source_fields: [...(preset.recommended_sources || ["title", "brands"])],
         use_google_search: preset.use_google_search !== false,
+        enable_verification: true,
         target_field: preset.target_field || "tags",
         output_format: preset.output_format || "json_array",
         prompt: preset.prompt || ""
@@ -465,6 +480,7 @@ function addBlankEnrichmentRule() {
         name: `カスタム Enrichment ルール #${APP_STATE.enrichmentRules.length + 1}`,
         source_fields: ["title", "brands"],
         use_google_search: true,
+        enable_verification: true,
         target_field: "tags",
         output_format: "json_array",
         prompt: `# 役割\n入力された商品情報をもとに、Google Search および Gemini を活用して補強データを生成してください。\n\n# 入力情報\n- 商品名: {title}\n- ブランド: {brands}\n\n# 出力形式\n必ず以下の JSON 配列形式のみで回答してください:\n["キーワード1", "キーワード2"]`
@@ -579,23 +595,48 @@ function renderEnrichmentRulesTable() {
         sourcesWrapper.appendChild(addSourceSelect);
         tdSources.appendChild(sourcesWrapper);
 
-        // 4. Google Search Grounding Toggle Switch
+        // 4. Google Search Grounding Toggle Switch + AI 検証トグル
         const tdSearch = document.createElement("td");
         tdSearch.className = "py-3.5 px-3 text-center";
+        const toggleWrapper = document.createElement("div");
+        toggleWrapper.className = "flex flex-col items-center gap-1.5";
+
         const searchBtn = document.createElement("button");
         searchBtn.type = "button";
         if (rule.use_google_search) {
-            searchBtn.className = "bg-blue-600 text-white font-bold text-[11px] px-3 py-1.5 rounded-full shadow-sm flex items-center justify-center gap-1.5 mx-auto hover:bg-blue-700 transition";
+            searchBtn.className = "bg-blue-600 text-white font-bold text-[11px] px-3 py-1.5 rounded-full shadow-sm flex items-center justify-center gap-1.5 mx-auto hover:bg-blue-700 transition w-[118px]";
             searchBtn.innerHTML = `<i class="fa-brands fa-google"></i> <span>Search ON</span>`;
         } else {
-            searchBtn.className = "bg-slate-200 text-slate-600 font-semibold text-[11px] px-3 py-1.5 rounded-full flex items-center justify-center gap-1.5 mx-auto hover:bg-slate-300 transition";
+            searchBtn.className = "bg-slate-200 text-slate-600 font-semibold text-[11px] px-3 py-1.5 rounded-full flex items-center justify-center gap-1.5 mx-auto hover:bg-slate-300 transition w-[118px]";
             searchBtn.innerHTML = `<i class="fa-solid fa-ban"></i> <span>Search OFF</span>`;
         }
         searchBtn.onclick = () => {
             rule.use_google_search = !rule.use_google_search;
             renderEnrichmentRulesTable();
         };
-        tdSearch.appendChild(searchBtn);
+
+        // AI 検証・自動修正 (生成結果の事実確認・日本語校閲パス)
+        const verifyBtn = document.createElement("button");
+        verifyBtn.type = "button";
+        const verifyOn = rule.enable_verification !== false;
+        if (verifyOn) {
+            verifyBtn.className = "bg-emerald-600 text-white font-bold text-[11px] px-3 py-1.5 rounded-full shadow-sm flex items-center justify-center gap-1.5 mx-auto hover:bg-emerald-700 transition w-[118px]";
+            verifyBtn.innerHTML = `<i class="fa-solid fa-circle-check"></i> <span>AI検証 ON</span>`;
+            verifyBtn.title = "生成結果を別プロンプトで校閲し、事実誤り・途中で切れた文章・不自然な日本語を自動修正します（推奨）。";
+        } else {
+            verifyBtn.className = "bg-slate-200 text-slate-600 font-semibold text-[11px] px-3 py-1.5 rounded-full flex items-center justify-center gap-1.5 mx-auto hover:bg-slate-300 transition w-[118px]";
+            verifyBtn.innerHTML = `<i class="fa-solid fa-circle-xmark"></i> <span>AI検証 OFF</span>`;
+            verifyBtn.title = "検証パスを行いません。処理は速くなりますが、途中で切れた文章や誤情報が残る可能性があります。";
+        }
+        verifyBtn.onclick = () => {
+            rule.enable_verification = !verifyOn;
+            renderEnrichmentRulesTable();
+        };
+
+        toggleWrapper.appendChild(searchBtn);
+        toggleWrapper.appendChild(verifyBtn);
+        tdSearch.appendChild(toggleWrapper);
+
 
         // 5. Target Schema Field Selector
         const tdTarget = document.createElement("td");
@@ -812,6 +853,12 @@ async function testSingleEnrichmentRule(ruleIndex) {
         document.getElementById("testRawResponse").textContent = tr.raw_response || tr.error || "";
         document.getElementById("testFullBigqueryRow").textContent = JSON.stringify(data.bigquery_row_preview, null, 2);
 
+        // AI 品質検証（ファクトチェック ＆ 日本語校閲）結果を描画
+        renderVerificationPanel(tr);
+
+        // Before & After 改善サマリーを描画
+        renderBeforeAfterDiff(data);
+
         const valBadge = document.getElementById("testValidationBadge");
         if (data.validation && data.validation.valid) {
             valBadge.className = "bg-emerald-100 text-emerald-800 px-2.5 py-0.5 rounded-full text-xs font-bold";
@@ -825,6 +872,308 @@ async function testSingleEnrichmentRule(ruleIndex) {
         loading.classList.add("hidden");
         alert("1行テストに失敗しました: " + err.message);
         closeTestResultModal();
+    }
+}
+
+// ============================================================================
+// AI 品質検証パネル描画
+// ============================================================================
+
+const VERIFICATION_ISSUE_LABELS = {
+    truncated: "出力の途中切れ（トークン上限）",
+    incomplete_sentence: "文章が途中で終わっている",
+    unbalanced_bracket: "括弧の開閉が不一致",
+    too_short: "内容が極端に短い",
+    repetition: "同一フレーズの繰り返し",
+    unresolved_placeholder: "未置換のプレースホルダー",
+    placeholder_text: "未確定・回答拒否の表現",
+    parse_empty: "パース結果が空",
+    parse_failed: "JSON パース失敗",
+    malformed_item: "不正な要素の混入",
+    empty: "出力が空",
+    unnatural_japanese: "不自然な日本語",
+    factual_error: "事実誤り",
+    hallucination: "根拠のない記述（ハルシネーション）",
+    format_violation: "出力形式違反",
+    other: "その他"
+};
+
+function buildIssueRow(issue, origin) {
+    const sev = (issue.severity || "low").toLowerCase();
+    const sevStyle = sev === "high"
+        ? "bg-red-100 text-red-800 border-red-200"
+        : (sev === "medium" ? "bg-amber-100 text-amber-800 border-amber-200" : "bg-slate-100 text-slate-700 border-slate-200");
+    const label = VERIFICATION_ISSUE_LABELS[issue.type] || issue.type || "問題";
+    const evidence = issue.evidence
+        ? `<div class="mt-1 text-[11px] text-slate-500 font-mono bg-slate-50 border-l-2 border-slate-300 pl-2 py-0.5">該当箇所: ${escapeHtml(issue.evidence)}</div>`
+        : "";
+    return `
+        <div class="border ${sevStyle} rounded-lg px-3 py-2">
+            <div class="flex items-start gap-2">
+                <span class="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-white/70 border ${sevStyle}">${sev}</span>
+                <div class="flex-1">
+                    <div class="text-xs font-bold">${escapeHtml(label)}
+                        <span class="text-[10px] font-normal text-slate-500 ml-1">(${origin})</span>
+                    </div>
+                    <div class="text-[11px] text-slate-700 mt-0.5">${escapeHtml(issue.detail || "")}</div>
+                    ${evidence}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderVerificationPanel(tr) {
+    const box = document.getElementById("testVerificationBox");
+    const verdictBadge = document.getElementById("testVerificationVerdictBadge");
+    const elapsedBadge = document.getElementById("testVerificationElapsedBadge");
+    const summaryEl = document.getElementById("testVerificationSummary");
+    const issuesEl = document.getElementById("testVerificationIssues");
+    const diffWrap = document.getElementById("testVerificationDiffWrap");
+    if (!box) return;
+
+    const ver = tr.verification || null;
+
+    // 検証が無効、または実行されなかった場合
+    if (!ver || !ver.enabled) {
+        verdictBadge.textContent = "検証 OFF";
+        verdictBadge.className = "bg-white/15 text-white px-2.5 py-0.5 rounded-full text-[11px] font-bold";
+        elapsedBadge.textContent = "";
+        summaryEl.innerHTML = `このルールは <strong>AI検証 OFF</strong> です。ルール行の「AI検証」ボタンを ON にすると、生成結果の事実確認・日本語校閲・途中切れの自動修正を行います。`;
+        issuesEl.innerHTML = `<span class="text-xs text-slate-400 italic">検証を実行していません。</span>`;
+        diffWrap.classList.add("hidden");
+        return;
+    }
+
+    const preIssues = ver.pre_issues || [];
+    const postIssues = ver.post_issues || [];
+    const llmIssues = ver.llm_issues || [];
+    const allIssues = [
+        ...preIssues.map((i) => ({ i, origin: "機械チェック" })),
+        ...llmIssues.map((i) => ({ i, origin: "AI校閲" }))
+    ];
+    const remainingHigh = postIssues.filter((i) => (i.severity || "") === "high").length;
+
+    // 判定バッジ
+    if (ver.verdict === "error") {
+        verdictBadge.textContent = "検証エラー";
+        verdictBadge.className = "bg-red-500 text-white px-2.5 py-0.5 rounded-full text-[11px] font-bold";
+    } else if (ver.changed) {
+        verdictBadge.innerHTML = `<i class="fa-solid fa-wand-magic-sparkles mr-1"></i>自動修正あり`;
+        verdictBadge.className = "bg-amber-400 text-amber-950 px-2.5 py-0.5 rounded-full text-[11px] font-bold";
+    } else if (remainingHigh > 0) {
+        verdictBadge.innerHTML = `<i class="fa-solid fa-triangle-exclamation mr-1"></i>要確認`;
+        verdictBadge.className = "bg-red-400 text-red-950 px-2.5 py-0.5 rounded-full text-[11px] font-bold";
+    } else {
+        verdictBadge.innerHTML = `<i class="fa-solid fa-check mr-1"></i>問題なし`;
+        verdictBadge.className = "bg-emerald-400 text-emerald-950 px-2.5 py-0.5 rounded-full text-[11px] font-bold";
+    }
+    elapsedBadge.textContent = `検証 ${ver.elapsed_seconds || 0}秒`;
+
+    // サマリー文
+    const parts = [];
+    if (ver.regeneration_count > 0) {
+        parts.push(`出力がトークン上限で切れたため <strong>${ver.regeneration_count} 回</strong>、上限を拡張して再生成しました。`);
+    }
+    parts.push(`機械チェックで <strong>${preIssues.length} 件</strong>、AI校閲で <strong>${llmIssues.length} 件</strong> の指摘を検出。`);
+    if (ver.changed) {
+        parts.push(`検証結果にもとづき本文を<strong class="text-amber-700">自動修正して格納</strong>しました。`);
+    } else if (ver.verdict === "rejected") {
+        parts.push(`<strong class="text-red-700">修正案が不適切だったため適用しませんでした。</strong>`);
+    } else if (ver.verdict === "error") {
+        parts.push(`<strong class="text-red-700">検証パスに失敗しました: ${escapeHtml(ver.error || "")}</strong>`);
+    } else {
+        parts.push(`修正は不要と判定されたため、生成結果をそのまま格納しています。`);
+    }
+    if (remainingHigh > 0) {
+        parts.push(`<strong class="text-red-700">⚠ 修正後もなお ${remainingHigh} 件の重大な問題が残っています。プロンプトの見直しを推奨します。</strong>`);
+    }
+    summaryEl.innerHTML = parts.join(" ");
+
+    // 問題一覧
+    if (allIssues.length === 0) {
+        issuesEl.innerHTML = `<div class="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+            <i class="fa-solid fa-circle-check mr-1"></i>文章の完全性・日本語の自然さ・事実の整合性・出力形式のいずれにも問題は検出されませんでした。
+        </div>`;
+    } else {
+        issuesEl.innerHTML = allIssues.map(({ i, origin }) => buildIssueRow(i, origin)).join("");
+    }
+
+    // 修正前 / 修正後
+    if (ver.changed && ver.corrected_response) {
+        diffWrap.classList.remove("hidden");
+        document.getElementById("testVerificationBefore").textContent = ver.original_response || "";
+        document.getElementById("testVerificationAfter").textContent = ver.corrected_response || "";
+    } else {
+        diffWrap.classList.add("hidden");
+    }
+}
+
+function toggleVerificationDiff() {
+    const container = document.getElementById("testVerificationDiff");
+    const icon = document.getElementById("testVerificationDiffIcon");
+    const text = document.getElementById("testVerificationDiffText");
+    const hidden = container.classList.contains("hidden");
+    container.classList.toggle("hidden", !hidden);
+    icon.className = hidden ? "fa-solid fa-chevron-down transition-transform" : "fa-solid fa-chevron-right transition-transform";
+    text.textContent = hidden ? "修正前 / 修正後の全文を隠す" : "修正前 / 修正後の全文を表示";
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
+
+function buildMetricCard(label, beforeVal, afterVal, unit, icon) {
+    const delta = afterVal - beforeVal;
+    const improved = delta > 0;
+    const deltaColor = improved ? "text-emerald-600" : (delta < 0 ? "text-red-600" : "text-slate-400");
+    const deltaSign = delta > 0 ? "+" : "";
+    const rateText = beforeVal > 0
+        ? `${Math.round((afterVal / beforeVal) * 100)}%`
+        : (afterVal > 0 ? "NEW" : "-");
+
+    return `
+        <div class="bg-white border ${improved ? "border-emerald-300" : "border-slate-200"} rounded-xl p-3 shadow-sm">
+            <div class="flex items-center justify-between mb-1.5">
+                <span class="text-[11px] font-bold text-slate-600 flex items-center gap-1"><i class="${icon} text-indigo-500"></i> ${label}</span>
+                ${improved ? `<span class="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full">改善 ${rateText}</span>` : ""}
+            </div>
+            <div class="flex items-baseline gap-2">
+                <span class="text-slate-400 font-mono text-sm line-through">${beforeVal}${unit}</span>
+                <i class="fa-solid fa-arrow-right text-slate-300 text-[10px]"></i>
+                <span class="text-slate-900 font-mono font-bold text-xl">${afterVal}${unit}</span>
+                <span class="${deltaColor} font-bold text-xs">(${deltaSign}${delta}${unit})</span>
+            </div>
+        </div>
+    `;
+}
+
+function renderBeforeAfterDiff(data) {
+    const diff = data.diff_summary || { changes: [], metrics: {}, changed_field_count: 0 };
+    const m = diff.metrics || {};
+
+    // 1) 変更件数バッジ
+    const badge = document.getElementById("diffChangedCountBadge");
+    if (badge) {
+        badge.textContent = diff.changed_field_count > 0
+            ? `${diff.changed_field_count} 項目が改善されました`
+            : "変化はありません";
+    }
+
+    // 2) 改善指標メトリクスカード
+    const cards = document.getElementById("diffMetricCards");
+    if (cards) {
+        cards.innerHTML = [
+            buildMetricCard("検索ヒット用キーワード数", m.search_terms_before || 0, m.search_terms_after || 0, " 個", "fa-solid fa-tags"),
+            buildMetricCard("商品説明文の情報量", m.description_length_before || 0, m.description_length_after || 0, " 字", "fa-solid fa-align-left"),
+            buildMetricCard("スペック属性 (attributes)", m.attributes_count_before || 0, m.attributes_count_after || 0, " 件", "fa-solid fa-sliders")
+        ].join("");
+    }
+
+    // 3) 項目別 Before / After 比較
+    const list = document.getElementById("diffFieldList");
+    if (!list) return;
+    list.innerHTML = "";
+
+    if (!diff.changes || diff.changes.length === 0) {
+        list.innerHTML = `
+            <div class="bg-white border border-slate-200 rounded-lg p-4 text-center text-slate-400 italic">
+                このルールによるスキーマ項目の変化はありませんでした。プロンプトや対象項目の設定をご確認ください。
+            </div>`;
+    } else {
+        diff.changes.forEach((c) => {
+            const isNew = c.change_type === "added";
+            const typeBadge = isNew
+                ? `<span class="bg-emerald-100 text-emerald-800 border border-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full">新規追加</span>`
+                : `<span class="bg-blue-100 text-blue-800 border border-blue-300 text-[10px] font-bold px-2 py-0.5 rounded-full">情報を拡充</span>`;
+
+            let beforeHtml = "";
+            let afterHtml = "";
+
+            if (c.kind === "array") {
+                const beforeSet = new Set((c.before_value || []).map(String));
+                beforeHtml = (c.before_value && c.before_value.length)
+                    ? c.before_value.map((v) => `<span class="bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full text-[11px]">${escapeHtml(v)}</span>`).join(" ")
+                    : `<span class="text-slate-400 italic text-[11px]">（データなし / 空配列）</span>`;
+
+                afterHtml = (c.after_value || []).map((v) => {
+                    const isAdded = !beforeSet.has(String(v));
+                    return isAdded
+                        ? `<span class="bg-emerald-100 text-emerald-900 border border-emerald-400 font-semibold px-2 py-0.5 rounded-full text-[11px]"><i class="fa-solid fa-plus text-[8px] mr-0.5"></i>${escapeHtml(v)}</span>`
+                        : `<span class="bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full text-[11px]">${escapeHtml(v)}</span>`;
+                }).join(" ");
+            } else {
+                beforeHtml = c.before_value
+                    ? `<span class="text-slate-600 text-[11px]">${escapeHtml(c.before_value).substring(0, 400)}</span>`
+                    : `<span class="text-slate-400 italic text-[11px]">（データなし / null）</span>`;
+                afterHtml = `<span class="text-emerald-900 text-[11px] font-medium">${escapeHtml(c.after_value).substring(0, 800)}</span>`;
+            }
+
+            const countText = c.kind === "array"
+                ? `${c.before_count} 件 → <span class="text-emerald-700 font-bold">${c.after_count} 件</span>`
+                : `${c.before_count} 字 → <span class="text-emerald-700 font-bold">${c.after_count} 字</span>`;
+
+            const div = document.createElement("div");
+            div.className = "bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm";
+            div.innerHTML = `
+                <div class="bg-slate-100 px-3 py-2 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                    <div class="flex items-center gap-2">
+                        <code class="font-mono font-bold text-indigo-800 text-xs">${escapeHtml(c.field)}</code>
+                        ${typeBadge}
+                    </div>
+                    <span class="text-[11px] text-slate-500 font-mono">${countText}</span>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-slate-200">
+                    <div class="p-3 bg-slate-50/60 space-y-1.5">
+                        <div class="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
+                            <i class="fa-regular fa-circle"></i> BEFORE
+                        </div>
+                        <div class="flex flex-wrap gap-1 max-h-32 overflow-y-auto">${beforeHtml}</div>
+                    </div>
+                    <div class="p-3 bg-emerald-50/40 space-y-1.5">
+                        <div class="text-[10px] font-bold text-emerald-700 uppercase tracking-wide flex items-center gap-1">
+                            <i class="fa-solid fa-circle-check"></i> AFTER
+                            ${c.kind === "array" && c.added_items && c.added_items.length ? `<span class="ml-1 text-emerald-600 normal-case">(${c.added_items.length} 件を新たに追加)</span>` : ""}
+                        </div>
+                        <div class="flex flex-wrap gap-1 max-h-32 overflow-y-auto">${afterHtml}</div>
+                    </div>
+                </div>
+            `;
+            list.appendChild(div);
+        });
+    }
+
+    // 4) JSON 左右比較
+    const beforeJson = document.getElementById("diffBeforeJson");
+    const afterJson = document.getElementById("diffAfterJson");
+    if (beforeJson) beforeJson.textContent = JSON.stringify(data.bigquery_row_before || {}, null, 2);
+    if (afterJson) afterJson.textContent = JSON.stringify(data.bigquery_row_preview || {}, null, 2);
+
+    // JSON 比較は初期状態で閉じておく
+    const jsonContainer = document.getElementById("diffJsonContainer");
+    if (jsonContainer && !jsonContainer.classList.contains("hidden")) {
+        toggleDiffJsonView();
+    }
+}
+
+function toggleDiffJsonView() {
+    const container = document.getElementById("diffJsonContainer");
+    const icon = document.getElementById("diffJsonToggleIcon");
+    const text = document.getElementById("diffJsonToggleText");
+    if (!container) return;
+
+    const isHidden = container.classList.toggle("hidden");
+    if (isHidden) {
+        if (icon) icon.className = "fa-solid fa-chevron-down";
+        if (text) text.textContent = "Before / After の完全な JSON を左右で比較する";
+    } else {
+        if (icon) icon.className = "fa-solid fa-chevron-up";
+        if (text) text.textContent = "JSON 比較を閉じる";
     }
 }
 
@@ -852,6 +1201,11 @@ async function startBatchProcessing() {
     document.getElementById("batchResultsPanel").classList.add("hidden");
     document.getElementById("jobSpinner").classList.remove("hidden");
     document.getElementById("jobProgressBar").style.width = "5%";
+    // A previous job's file must not be downloadable while a new run is in flight.
+    APP_STATE.currentJobId = null;
+    APP_STATE.totalProcessedRows = 0;
+    APP_STATE.processedResults = [];
+    updateDownloadAvailability(0);
     document.getElementById("jobLogConsole").innerHTML = `<div class="text-blue-400">[システム] 一括データ変換および Google Search + Gemini Enrichment ジョブを初期化しています...</div>`;
 
     try {
@@ -865,7 +1219,8 @@ async function startBatchProcessing() {
                 row_limit: rowLimit,
                 concurrency: concurrency,
                 model_name: modelName,
-                project_id: projectId
+                project_id: projectId,
+                enable_verification: (document.getElementById("batchEnableVerification") || { checked: true }).checked
             })
         });
 
@@ -895,6 +1250,8 @@ async function pollJobStatus() {
         document.getElementById("jobProcessedCount").textContent = data.processed_rows;
         document.getElementById("jobTotalCount").textContent = data.total_rows;
         document.getElementById("jobSuccessCount").textContent = data.success_count;
+        const fixedEl = document.getElementById("jobFixedCount");
+        if (fixedEl) fixedEl.textContent = data.fixed_count || 0;
 
         const pct = data.total_rows > 0 ? Math.round((data.processed_rows / data.total_rows) * 100) : 0;
         document.getElementById("jobProgressBar").style.width = `${Math.max(5, pct)}%`;
@@ -918,8 +1275,10 @@ async function pollJobStatus() {
             document.getElementById("jobStatusTitle").textContent = "✅ 全商品データの AI Enrichment および BigQuery スキーマ変換が完了しました！";
             document.getElementById("jobStatusSubtitle").textContent = `全 ${data.total_rows} 件の処理が完了しました`;
             APP_STATE.processedResults = data.results_preview || [];
+            APP_STATE.totalProcessedRows = data.total_rows || APP_STATE.processedResults.length;
             renderProcessedResultsTable();
             document.getElementById("batchResultsPanel").classList.remove("hidden");
+            updateDownloadAvailability(APP_STATE.totalProcessedRows, estimateBytesPerRow());
         } else if (data.status === "failed") {
             clearInterval(APP_STATE.jobPollInterval);
             APP_STATE.jobPollInterval = null;
@@ -936,7 +1295,12 @@ function renderProcessedResultsTable() {
     const tbody = document.getElementById("processedResultsTableBody");
     tbody.innerHTML = "";
 
-    document.getElementById("resultsSummaryText").textContent = `全 ${APP_STATE.processedResults.length} 件プレビュー`;
+    const total = APP_STATE.totalProcessedRows || APP_STATE.processedResults.length;
+    const shown = APP_STATE.processedResults.length;
+    document.getElementById("resultsSummaryText").textContent =
+        shown < total
+            ? `プレビュー ${shown} 件表示 / 全 ${total} 件 (JSONL には全 ${total} 件が出力されます)`
+            : `全 ${total} 件`;
 
     APP_STATE.processedResults.forEach((item, idx) => {
         const bq = item.bigquery_row || {};
@@ -989,12 +1353,141 @@ function renderProcessedResultsTable() {
 // Export, Download & BigQuery Direct Load
 // ============================================================================
 
-function downloadBigQueryJsonl() {
+/**
+ * Estimates the average serialized byte size of one BigQuery JSONL row, based on the
+ * preview rows we already have. Japanese text is multi-byte, so TextEncoder is used
+ * rather than String.length. Falls back to a rough constant when no preview exists.
+ */
+function estimateBytesPerRow() {
+    const rows = (APP_STATE.processedResults || []).filter((r) => r && r.bigquery_row);
+    if (!rows.length) return 2200;
+
+    const encoder = new TextEncoder();
+    const totalBytes = rows.reduce(
+        (sum, r) => sum + encoder.encode(JSON.stringify(r.bigquery_row)).length + 1, // +1 for the newline
+        0
+    );
+    return Math.round(totalBytes / rows.length);
+}
+
+/**
+ * Enables/disables the two JSONL download buttons and renders the row count and
+ * estimated file size. Called when a batch job completes and when a new one starts.
+ *
+ * NOTE: totalRows must come from the job status payload (data.total_rows), NOT from
+ * APP_STATE.processedResults.length - the backend caps results_preview at 20 rows
+ * while the export endpoint returns every processed row.
+ */
+function updateDownloadAvailability(totalRows, avgBytesPerRow) {
+    const ready = Boolean(APP_STATE.currentJobId) && totalRows > 0;
+    const headerBtn = document.getElementById("headerDownloadJsonlBtn");
+    const hint = document.getElementById("headerDownloadJsonlHint");
+    const info = document.getElementById("jsonlFileInfo");
+
+    if (headerBtn) {
+        headerBtn.disabled = !ready;
+        headerBtn.className = ready
+            ? "bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow flex items-center gap-2 transition"
+            : "bg-slate-200 text-slate-400 cursor-not-allowed font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm flex items-center gap-2 transition";
+    }
+    if (hint) {
+        hint.textContent = ready ? `(全 ${totalRows} 件)` : "(実行後に有効化)";
+    }
+
+    if (info) {
+        if (ready) {
+            const estBytes = totalRows * (avgBytesPerRow || 2200);
+            info.innerHTML = `<i class="fa-solid fa-file-lines mr-1"></i> 出力対象: 全 ${totalRows} 件 / 推定ファイルサイズ: 約 ${formatFileSize(estBytes)} ` +
+                `<span class="font-normal text-emerald-700">(NDJSON 形式 ・ 1行 = 1商品 ・ BigQuery ロードにそのまま利用できます)</span>`;
+        } else {
+            info.textContent = "";
+        }
+    }
+}
+
+function formatFileSize(bytes) {
+    if (!bytes || bytes < 1024) return `${bytes || 0} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+/**
+ * Downloads the generated BigQuery JSONL (NDJSON) file.
+ *
+ * Uses fetch + Blob rather than assigning window.location.href: navigating the page
+ * away would discard the entire in-page mapping / enrichment configuration if the
+ * server returned an error (e.g. the job no longer exists after a restart).
+ */
+async function downloadBigQueryJsonl() {
     if (!APP_STATE.currentJobId) {
-        alert("先にデータ変換処理を実行してください。");
+        alert("先に「データマッピング ＆ Enrichment 一括実行」を実行してください。\n処理が完了すると JSONL ファイルをダウンロードできます。");
         return;
     }
-    window.location.href = `/api/export/jsonl/${APP_STATE.currentJobId}`;
+
+    const buttons = ["headerDownloadJsonlBtn", "panelDownloadJsonlBtn"]
+        .map((id) => document.getElementById(id))
+        .filter(Boolean);
+    const originalHtml = buttons.map((b) => b.innerHTML);
+
+    buttons.forEach((b) => {
+        b.disabled = true;
+        b.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> JSONL を生成中...`;
+    });
+
+    try {
+        const res = await fetch(`/api/export/jsonl/${APP_STATE.currentJobId}`);
+
+        if (!res.ok) {
+            let detail = "";
+            try {
+                const errBody = await res.json();
+                detail = errBody.detail || "";
+            } catch (e) { /* non-JSON error body */ }
+
+            if (res.status === 404) {
+                throw new Error("ジョブが見つかりません（サーバーの再起動によりデータが失われた可能性があります）。\nお手数ですが、一括実行をもう一度実行してください。");
+            }
+            if (res.status === 400) {
+                throw new Error("ダウンロード可能な処理結果がありません。一括実行が正常に完了しているかご確認ください。");
+            }
+            throw new Error(detail || `ダウンロードに失敗しました (HTTP ${res.status})`);
+        }
+
+        // Prefer the server-provided filename from Content-Disposition.
+        let filename = `aics_bigquery_catalog_${APP_STATE.currentJobId}.jsonl`;
+        const disposition = res.headers.get("Content-Disposition") || "";
+        const match = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+        if (match && match[1]) {
+            filename = decodeURIComponent(match[1]);
+        }
+
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        // Revoke on the next tick so Safari/Firefox have time to start the download.
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+        const info = document.getElementById("jsonlFileInfo");
+        if (info) {
+            info.innerHTML = `<i class="fa-solid fa-circle-check mr-1"></i> ダウンロード完了: <code>${filename}</code> (${formatFileSize(blob.size)})` +
+                `<span class="font-normal text-emerald-700"> ・ NDJSON 形式 ・ BigQuery ロードにそのまま利用できます</span>`;
+        }
+        if (blob.size === 0) {
+            alert("警告: ダウンロードされたファイルが空です。処理結果をご確認ください。");
+        }
+    } catch (err) {
+        alert("JSONL ダウンロードエラー:\n\n" + err.message);
+    } finally {
+        buttons.forEach((b, i) => {
+            b.disabled = false;
+            b.innerHTML = originalHtml[i];
+        });
+    }
 }
 
 function copyBqCliCommand() {

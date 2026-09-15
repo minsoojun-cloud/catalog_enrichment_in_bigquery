@@ -33,7 +33,8 @@ from app.transformer import (
     build_base_mapped_row,
     apply_enrichment_to_extracted,
     format_to_bigquery_schema,
-    validate_bigquery_row
+    validate_bigquery_row,
+    build_enrichment_diff
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -66,7 +67,7 @@ class TestRuleRequest(BaseModel):
     sample_row: Optional[Dict[str, Any]] = None
     mapping_config: Dict[str, Dict[str, Any]] = {}
     rule: Dict[str, Any]
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.8-flash"
     project_id: Optional[str] = None
     location: Optional[str] = None
 
@@ -77,9 +78,10 @@ class StartJobRequest(BaseModel):
     enrichment_rules: List[Dict[str, Any]]
     row_limit: Optional[int] = None
     concurrency: int = 5
-    model_name: str = "gemini-2.5-flash"
+    model_name: str = "gemini-3.8-flash"
     project_id: Optional[str] = None
     location: Optional[str] = None
+    enable_verification: bool = True
 
 
 class BigQueryLoadRequest(BaseModel):
@@ -166,6 +168,32 @@ async def serve_index():
     if not index_path.exists():
         return HTMLResponse("<h1>index.html not found</h1>", status_code=404)
     return HTMLResponse(index_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/health")
+@app.get("/healthz")
+async def healthz():
+    """
+    Cloud Run / ロードバランサ用のヘルスチェックエンドポイント。
+    外部 API を呼ばずに即座に応答する（起動確認とコンテナ内の設定解決の検証用）。
+
+    NOTE: Cloud Run では Google Front End (GFE) が "/healthz" を予約パスとして
+          横取りし、コンテナまで到達せず GFE の 404 が返る。そのため本番では
+          "/api/health" を使用すること。"/healthz" はローカル実行用に残している。
+    """
+    from app.config import SCHEMA_FILE_PATH
+
+    return {
+        "status": "ok",
+        "project_id": settings.project_id,
+        "location": settings.location,
+        "default_model": settings.default_model,
+        "schema_file": str(SCHEMA_FILE_PATH),
+        "schema_file_found": SCHEMA_FILE_PATH.is_file(),
+        "active_datasets": len(DATASETS),
+        "active_jobs": len(JOBS),
+    }
+
 
 
 @app.get("/api/metadata")
@@ -257,15 +285,25 @@ async def test_single_enrichment_rule(req: TestRuleRequest):
         req.location or settings.location
     )
 
+    # "Before": mapping only (no AI enrichment applied)
+    bq_before = format_to_bigquery_schema(dict(base_extracted), req.project_id or settings.project_id)
+    validation_before = validate_bigquery_row(bq_before)
+
+    # "After": mapping + this enrichment rule applied
     merged_extracted = apply_enrichment_to_extracted(base_extracted, [result])
     bq_preview = format_to_bigquery_schema(merged_extracted, req.project_id or settings.project_id)
     validation = validate_bigquery_row(bq_preview)
 
+    diff_summary = build_enrichment_diff(bq_before, bq_preview, result.get("target_field", ""))
+
     return {
         "test_result": result,
         "raw_row": raw_row,
+        "bigquery_row_before": bq_before,
         "bigquery_row_preview": bq_preview,
-        "validation": validation
+        "validation_before": validation_before,
+        "validation": validation,
+        "diff_summary": diff_summary
     }
 
 
@@ -297,10 +335,14 @@ async def run_batch_job_worker(job_id: str, req: StartJobRequest):
             for rule in req.enrichment_rules:
                 if not rule.get("enabled", True):
                     continue
+                effective_rule = dict(rule)
+                # ジョブ全体の検証設定をルール未指定時のデフォルトとして適用
+                if "enable_verification" not in effective_rule:
+                    effective_rule["enable_verification"] = req.enable_verification
                 res = await loop.run_in_executor(
                     None,
                     enricher_engine.execute_rule_sync,
-                    rule,
+                    effective_rule,
                     raw_row,
                     base_extracted,
                     req.model_name,
@@ -313,6 +355,17 @@ async def run_batch_job_worker(job_id: str, req: StartJobRequest):
             bq_row = format_to_bigquery_schema(merged, req.project_id or settings.project_id)
             val_res = validate_bigquery_row(bq_row)
 
+            # --- 品質検証サマリー ---
+            fixed_rules = 0
+            remaining_issues = 0
+            for out in enrichment_outputs:
+                ver = out.get("verification") or {}
+                if ver.get("changed"):
+                    fixed_rules += 1
+                remaining_issues += len([
+                    i for i in (ver.get("post_issues") or []) if i.get("severity") == "high"
+                ])
+
             row_elapsed = round(time.time() - row_start, 2)
             prod_id = bq_row.get("id", f"row_{idx+1}")
             prod_title = (bq_row.get("title") or "")[:30]
@@ -322,8 +375,19 @@ async def run_batch_job_worker(job_id: str, req: StartJobRequest):
                 job["success_count"] += 1
             else:
                 job["warning_count"] += 1
+            job["fixed_count"] = job.get("fixed_count", 0) + fixed_rules
+            job["quality_issue_count"] = job.get("quality_issue_count", 0) + remaining_issues
 
-            log_msg = f"[{job['processed_rows']}/{job['total_rows']}] 商品 '{prod_id}' ({prod_title}...) 変換・Enrichment完了 ({row_elapsed}秒)"
+            quality_note = ""
+            if fixed_rules:
+                quality_note += f" / AI検証で {fixed_rules} 件自動修正"
+            if remaining_issues:
+                quality_note += f" / ⚠ 未解消の重大な問題 {remaining_issues} 件"
+
+            log_msg = (
+                f"[{job['processed_rows']}/{job['total_rows']}] 商品 '{prod_id}' ({prod_title}...) "
+                f"変換・Enrichment完了 ({row_elapsed}秒){quality_note}"
+            )
             job["logs"].append(log_msg)
 
             return {
@@ -332,8 +396,13 @@ async def run_batch_job_worker(job_id: str, req: StartJobRequest):
                 "enrichment_traces": enrichment_outputs,
                 "bigquery_row": bq_row,
                 "validation": val_res,
+                "verification_summary": {
+                    "fixed_rules": fixed_rules,
+                    "remaining_high_issues": remaining_issues
+                },
                 "elapsed_seconds": row_elapsed
             }
+
 
     try:
         tasks = [process_single_row(i, r) for i, r in enumerate(target_rows)]
@@ -367,6 +436,8 @@ async def start_batch_process(req: StartJobRequest):
         "processed_rows": 0,
         "success_count": 0,
         "warning_count": 0,
+        "fixed_count": 0,
+        "quality_issue_count": 0,
         "started_at": time.time(),
         "completed_at": None,
         "logs": [],
@@ -390,6 +461,8 @@ async def get_job_status(job_id: str):
         "processed_rows": job["processed_rows"],
         "success_count": job["success_count"],
         "warning_count": job["warning_count"],
+        "fixed_count": job.get("fixed_count", 0),
+        "quality_issue_count": job.get("quality_issue_count", 0),
         "logs": job["logs"][-30:],
         "error": job["error"],
         "results_preview": job["results"][:20] if job["status"] == "completed" else []

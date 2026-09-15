@@ -35,10 +35,10 @@
                 <div class="flex items-center bg-slate-800 border border-slate-700 rounded-md px-2.5 py-1.5">
                     <span class="text-slate-400 mr-1.5"><i class="fa-solid fa-microchip text-emerald-400 mr-1"></i>Gemini:</span>
                     <select id="globalModelName" class="bg-slate-800 text-white font-medium focus:outline-none cursor-pointer">
-                        <option value="gemini-2.5-flash" selected>gemini-2.5-flash (推奨)</option>
+                        <option value="gemini-3.8-flash" selected>gemini-3.8-flash (推奨)</option>
+                        <option value="gemini-flash-latest">gemini-flash-latest</option>
+                        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                         <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                        <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-                        <option value="gemini-1.5-pro">gemini-1.5-pro</option>
                     </select>
                 </div>
 
@@ -72,7 +72,7 @@
                 </div>
                 <div class="flex items-center gap-2">
                     <button onclick="loadSampleData()" class="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-medium text-xs px-3.5 py-2 rounded-lg flex items-center gap-1.5 transition shadow-sm">
-                        <i class="fa-solid fa-bolt text-indigo-600"></i> EDION 家電サンプルデータをロード (5件)
+                        <i class="fa-solid fa-bolt text-indigo-600"></i> サンプル商品データをロード (家電カタログ 5件)
                     </button>
                 </div>
             </div>
@@ -98,7 +98,7 @@
                         <i class="fa-solid fa-table text-blue-600 text-lg"></i>
                         <div>
                             <div class="flex items-center gap-2">
-                                <span id="datasetFilename" class="font-bold text-sm text-slate-800">edion_sample_catalog.csv</span>
+                                <span id="datasetFilename" class="font-bold text-sm text-slate-800">sample_product_catalog.csv</span>
                                 <span id="datasetRowCount" class="bg-blue-100 text-blue-800 text-xs font-semibold px-2 py-0.5 rounded-full">5 行</span>
                             </div>
                             <div id="datasetColumnsList" class="text-xs text-slate-500 mt-1 flex flex-wrap gap-1"></div>
@@ -242,7 +242,7 @@
                                 <th class="py-3 px-3 w-12 text-center">有効</th>
                                 <th class="py-3 px-3 w-48">Enrichment タスク名</th>
                                 <th class="py-3 px-3 w-56">使用する入力項目 (Source Columns)</th>
-                                <th class="py-3 px-3 w-36 text-center">Google Search 連携</th>
+                                <th class="py-3 px-3 w-40 text-center">Google Search / AI検証</th>
                                 <th class="py-3 px-3 w-52">結果格納スキーマ項目 (Target Field)</th>
                                 <th class="py-3 px-3 w-36">出力データ形式</th>
                                 <th class="py-3 px-4">プロンプト設定 (Prompt)</th>
@@ -295,8 +295,19 @@
                             <option value="10">10並列</option>
                         </select>
                     </div>
+                    <label class="flex items-center space-x-2 text-xs bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 cursor-pointer"
+                           title="生成結果を別プロンプトで校閲し、事実誤り・途中で切れた文章・不自然な日本語を自動修正します。処理時間は約1.5〜2倍になります。">
+                        <input type="checkbox" id="batchEnableVerification" checked class="w-3.5 h-3.5 text-emerald-600 rounded cursor-pointer">
+                        <span class="text-emerald-900 font-bold"><i class="fa-solid fa-shield-halved mr-1"></i>AI検証・自動修正</span>
+                    </label>
                     <button id="startBatchBtn" onclick="startBatchProcessing()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-5 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
                         <i class="fa-solid fa-play"></i> データマッピング ＆ Enrichment 一括実行
+                    </button>
+                    <button id="headerDownloadJsonlBtn" onclick="downloadBigQueryJsonl()" disabled
+                            title="一括実行が完了すると、BigQuery ロード用の JSONL (NDJSON) ファイルをダウンロードできます。"
+                            class="bg-slate-200 text-slate-400 cursor-not-allowed font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm flex items-center gap-2 transition">
+                        <i class="fa-solid fa-file-arrow-down"></i> JSONL ダウンロード
+                        <span id="headerDownloadJsonlHint" class="font-normal text-[11px]">(実行後に有効化)</span>
                     </button>
                 </div>
             </div>
@@ -318,6 +329,9 @@
                             </div>
                             <div class="bg-emerald-950/60 text-emerald-300 px-3 py-1.5 rounded-lg border border-emerald-700/50">
                                 スキーマ検証パス: <span id="jobSuccessCount" class="font-bold">0</span>
+                            </div>
+                            <div class="bg-amber-950/60 text-amber-300 px-3 py-1.5 rounded-lg border border-amber-700/50" title="AI検証により自動修正された生成結果の数">
+                                AI自動修正: <span id="jobFixedCount" class="font-bold">0</span>
                             </div>
                         </div>
                     </div>
@@ -341,11 +355,12 @@
                             <div>
                                 <h3 class="text-sm font-bold text-emerald-950">AI Commerce Search BigQuery スキーマデータの生成が完了しました！</h3>
                                 <p class="text-xs text-emerald-700">変換前後のデータを比較確認し、BigQuery ロード用の JSONL ファイルをダウンロードしてください。</p>
+                                <p id="jsonlFileInfo" class="text-[11px] text-emerald-800 font-semibold mt-1"></p>
                             </div>
                         </div>
 
                         <div class="flex flex-wrap items-center gap-2.5">
-                            <button onclick="downloadBigQueryJsonl()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
+                            <button id="panelDownloadJsonlBtn" onclick="downloadBigQueryJsonl()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
                                 <i class="fa-solid fa-file-arrow-down"></i> BigQuery JSONL ダウンロード (.jsonl)
                             </button>
                             <button onclick="openBigQueryLoadModal()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow flex items-center gap-2 transition">
@@ -455,7 +470,7 @@
     <!-- MODAL 2: Single Row Test Inspector Modal (1行即時テスト結果確認) -->
     <!-- ============================================================================ -->
     <div id="testResultModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
-        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 max-w-4xl w-full overflow-hidden flex flex-col max-h-[92vh]">
+        <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-[90vw] max-w-[90vw] h-[90vh] max-h-[90vh] overflow-hidden flex flex-col">
             <div class="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 text-white px-6 py-4 flex items-center justify-between">
                 <div class="flex items-center space-x-2.5">
                     <i class="fa-solid fa-vial-circle-check text-emerald-400 text-lg"></i>
@@ -493,7 +508,51 @@
                         </div>
                         <div>
                             <span class="text-slate-500 font-semibold">参照した Web ソース (Grounding Chunks):</span>
-                            <div id="testSearchSourcesList" class="mt-1 space-y-1 max-h-24 overflow-y-auto"></div>
+                            <div id="testSearchSourcesList" class="mt-1 space-y-1 max-h-32 overflow-y-auto"></div>
+                        </div>
+                    </div>
+
+                    <!-- ============================================================ -->
+                    <!-- AI 品質検証（ファクトチェック ＆ 日本語校閲） -->
+                    <!-- ============================================================ -->
+                    <div id="testVerificationBox" class="border-2 border-emerald-300 rounded-xl overflow-hidden shadow-sm">
+                        <div id="testVerificationHeader" class="bg-gradient-to-r from-emerald-800 via-teal-800 to-slate-900 text-white px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+                            <span class="font-bold text-sm flex items-center gap-2">
+                                <i class="fa-solid fa-shield-halved text-emerald-300"></i>
+                                AI 品質検証（ファクトチェック ＆ 日本語校閲）
+                            </span>
+                            <div class="flex items-center gap-2">
+                                <span id="testVerificationVerdictBadge" class="bg-white/15 text-white px-2.5 py-0.5 rounded-full text-[11px] font-bold"></span>
+                                <span id="testVerificationElapsedBadge" class="bg-white/10 text-emerald-100 px-2.5 py-0.5 rounded-full font-mono text-[11px]"></span>
+                            </div>
+                        </div>
+                        <div class="bg-white p-4 space-y-3">
+                            <p id="testVerificationSummary" class="text-xs text-slate-600"></p>
+                            <div>
+                                <span class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">検出された問題</span>
+                                <div id="testVerificationIssues" class="mt-1.5 space-y-1.5"></div>
+                            </div>
+                            <div id="testVerificationDiffWrap" class="hidden pt-1">
+                                <button type="button" onclick="toggleVerificationDiff()"
+                                    class="text-xs font-bold text-emerald-700 hover:text-emerald-900 flex items-center gap-1.5">
+                                    <i id="testVerificationDiffIcon" class="fa-solid fa-chevron-right transition-transform"></i>
+                                    <span id="testVerificationDiffText">修正前 / 修正後の全文を表示</span>
+                                </button>
+                                <div id="testVerificationDiff" class="hidden grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+                                    <div class="border border-red-200 rounded-lg overflow-hidden">
+                                        <div class="bg-red-50 text-red-800 text-[11px] font-bold px-3 py-1.5 border-b border-red-200">
+                                            <i class="fa-solid fa-xmark mr-1"></i>修正前（生成直後の原文）
+                                        </div>
+                                        <pre id="testVerificationBefore" class="bg-white text-slate-700 p-3 overflow-auto code-preview max-h-96 whitespace-pre-wrap"></pre>
+                                    </div>
+                                    <div class="border border-emerald-200 rounded-lg overflow-hidden">
+                                        <div class="bg-emerald-50 text-emerald-800 text-[11px] font-bold px-3 py-1.5 border-b border-emerald-200">
+                                            <i class="fa-solid fa-check mr-1"></i>修正後（検証・校閲済み / 実際に格納される内容）
+                                        </div>
+                                        <pre id="testVerificationAfter" class="bg-white text-slate-800 p-3 overflow-auto code-preview max-h-96 whitespace-pre-wrap"></pre>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -505,14 +564,62 @@
                                     <i class="fa-solid fa-bullseye text-emerald-600"></i> スキーマ項目パース結果 (<code id="testTargetFieldBadge" class="font-mono text-blue-700"></code>)
                                 </span>
                             </div>
-                            <pre id="testParsedOutput" class="bg-slate-900 text-emerald-300 p-3 rounded-lg overflow-x-auto code-preview max-h-60"></pre>
+                            <pre id="testParsedOutput" class="bg-slate-900 text-emerald-300 p-3 rounded-lg overflow-auto code-preview max-h-80"></pre>
                         </div>
 
                         <div class="border border-slate-200 bg-slate-50 rounded-xl p-4 space-y-2">
                             <span class="font-bold text-slate-700 flex items-center gap-1.5">
                                 <i class="fa-solid fa-robot text-indigo-600"></i> Gemini 生成テキスト原文 (Raw Response)
                             </span>
-                            <pre id="testRawResponse" class="bg-white border border-slate-200 text-slate-700 p-3 rounded-lg overflow-x-auto code-preview max-h-60 whitespace-pre-wrap"></pre>
+                            <pre id="testRawResponse" class="bg-white border border-slate-200 text-slate-700 p-3 rounded-lg overflow-auto code-preview max-h-80 whitespace-pre-wrap"></pre>
+                        </div>
+                    </div>
+
+                    <!-- ============================================================ -->
+                    <!-- Before & After 改善サマリー (Enrichment による改善効果の可視化) -->
+                    <!-- ============================================================ -->
+                    <div class="border-2 border-indigo-300 rounded-xl overflow-hidden shadow-sm">
+                        <div class="bg-gradient-to-r from-indigo-900 via-blue-900 to-slate-900 text-white px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+                            <span class="font-bold text-sm flex items-center gap-2">
+                                <i class="fa-solid fa-code-compare text-emerald-400"></i>
+                                Before &amp; After ー Enrichment による改善内容
+                            </span>
+                            <span id="diffChangedCountBadge" class="bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 px-2.5 py-0.5 rounded-full text-xs font-semibold"></span>
+                        </div>
+
+                        <div class="p-4 space-y-4 bg-slate-50/60">
+                            <!-- 改善指標メトリクスカード -->
+                            <div id="diffMetricCards" class="grid grid-cols-1 sm:grid-cols-3 gap-3"></div>
+
+                            <!-- 項目別 Before / After 比較 -->
+                            <div class="space-y-1.5">
+                                <div class="font-bold text-slate-700 flex items-center gap-1.5">
+                                    <i class="fa-solid fa-list-check text-indigo-600"></i> 項目別の変化 (Field-level Changes)
+                                </div>
+                                <div id="diffFieldList" class="space-y-2.5"></div>
+                            </div>
+
+                            <!-- JSON 左右比較 -->
+                            <div class="space-y-1.5">
+                                <button onclick="toggleDiffJsonView()" class="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1.5">
+                                    <i id="diffJsonToggleIcon" class="fa-solid fa-chevron-down"></i>
+                                    <span id="diffJsonToggleText">Before / After の完全な JSON を左右で比較する</span>
+                                </button>
+                                <div id="diffJsonContainer" class="hidden grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    <div class="space-y-1">
+                                        <span class="font-bold text-slate-600 flex items-center gap-1.5">
+                                            <i class="fa-regular fa-circle text-slate-400"></i> BEFORE (マッピングのみ)
+                                        </span>
+                                        <pre id="diffBeforeJson" class="bg-slate-100 border border-slate-300 text-slate-700 p-3 rounded-lg overflow-x-auto code-preview max-h-72"></pre>
+                                    </div>
+                                    <div class="space-y-1">
+                                        <span class="font-bold text-emerald-700 flex items-center gap-1.5">
+                                            <i class="fa-solid fa-circle-check text-emerald-600"></i> AFTER (AI Enrichment 適用後)
+                                        </span>
+                                        <pre id="diffAfterJson" class="bg-slate-950 text-emerald-300 p-3 rounded-lg overflow-x-auto code-preview max-h-72"></pre>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 

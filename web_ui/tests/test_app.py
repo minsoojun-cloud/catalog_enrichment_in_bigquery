@@ -96,3 +96,74 @@ def test_prompt_rendering():
     assert "상품명: 테스트 상품" in rendered
     assert "브랜드: 브랜드A" in rendered
     assert "p_cd: 123" in rendered
+
+
+# ============================================================================
+# 出力品質検証 (Quality Verification) のテスト
+# ============================================================================
+
+TRUNCATED_DESCRIPTION = (
+    "【清潔性と高耐久を両立した限定モデル】日立 白くまくん Dシリーズ 6畳用。"
+    "凍結洗浄Light とカビバスターをW搭載し、内部の汚れやカビを抑制します。"
+    "● カビの原因を残さない「内部送風乾燥運転」 冷房や除湿運転の停止後、自動で約2時間の送風運転を行い、室"
+)
+
+
+def test_detect_truncated_description():
+    """途中で切れた説明文を機械チェックで検出できること。"""
+    issues = enricher_engine.detect_output_issues(
+        TRUNCATED_DESCRIPTION, TRUNCATED_DESCRIPTION, "text", "MAX_TOKENS"
+    )
+    types = {i["type"] for i in issues}
+    assert "truncated" in types
+    assert "incomplete_sentence" in types
+    assert all(i["severity"] == "high" for i in issues)
+
+
+def test_detect_clean_description_has_no_issue():
+    """正常に完結した文章では問題を検出しないこと。"""
+    text = "ダイキンのエアコンです。ストリーマ搭載で内部を清潔に保ちます。"
+    assert enricher_engine.detect_output_issues(text, text, "text", "STOP") == []
+
+
+def test_detect_unresolved_placeholder_and_empty_array():
+    leftover = "商品名は {product_name} です。"
+    types = {i["type"] for i in enricher_engine.detect_output_issues(leftover, leftover, "text", "STOP")}
+    assert "unresolved_placeholder" in types
+
+    types = {i["type"] for i in enricher_engine.detect_output_issues("[]", [], "json_array", "STOP")}
+    assert "parse_empty" in types
+
+
+def test_detect_unbalanced_bracket():
+    text = "この商品は「高耐久モデルです。長くお使いいただけます。"
+    types = {i["type"] for i in enricher_engine.detect_output_issues(text, text, "text", "STOP")}
+    assert "unbalanced_bracket" in types
+
+
+def test_verification_prompt_contains_source_and_issues():
+    rule = {"prompt": "商品説明を生成してください。", "name": "desc"}
+    raw_row = {"product_name": "日立 白くまくん", "maker": "日立"}
+    issues = enricher_engine.detect_output_issues(
+        TRUNCATED_DESCRIPTION, TRUNCATED_DESCRIPTION, "text", "MAX_TOKENS"
+    )
+    prompt = enricher_engine.build_verification_prompt(
+        rule, raw_row, TRUNCATED_DESCRIPTION, "text", "description", issues
+    )
+    assert "日立 白くまくん" in prompt
+    assert "incomplete_sentence" in prompt
+    assert "corrected_output" in prompt
+    assert "ハルシネーション" in prompt
+
+
+def test_extract_json_object_from_fenced_review_response():
+    fenced = '```json\n{"verdict": "fixed", "issues": [], "corrected_output": "完結した文章です。"}\n```'
+    parsed = enricher_engine._extract_json_object(fenced)
+    assert parsed["verdict"] == "fixed"
+    assert parsed["corrected_output"] == "完結した文章です。"
+
+
+def test_start_job_request_defaults_verification_on():
+    from app.main import StartJobRequest
+    req = StartJobRequest(dataset_id="d", mapping_config={}, enrichment_rules=[])
+    assert req.enable_verification is True

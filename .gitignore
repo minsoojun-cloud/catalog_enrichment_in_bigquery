@@ -19,3 +19,12 @@ ENV/
 
 # Scratch / Temp
 *.tmp
+
+# Environment / secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# Test cache
+.pytest_cache/

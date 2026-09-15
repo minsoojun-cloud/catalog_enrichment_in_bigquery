@@ -1,0 +1,18 @@
+# Docker / Cloud Build にアップロードしないファイル
+web_ui/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+web_ui/tests/
+web_ui/requirements-dev.txt
+.git/
+.gitignore
+.env
+.env.*
+submit_batch_job.py
+*.sql
+
+# ドキュメント類は除外するが、アプリが読み込む data_mapping.md は残す
+instructions.md
+vertex_ai_batch_prediction_guide_ja.md
+CLOUD_RUN_DEPLOY.md

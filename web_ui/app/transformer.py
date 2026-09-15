@@ -294,3 +294,131 @@ def validate_bigquery_row(bq_row: Dict[str, Any]) -> Dict[str, Any]:
         "errors": errors,
         "warnings": warnings
     }
+
+
+def _flatten_for_diff(bq_row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Flattens a BigQuery row into comparable {field_path: value} pairs for Before/After diffing.
+    Nested `attributes` entries are expanded as `attributes[key='xxx']`.
+    """
+    flat: Dict[str, Any] = {}
+    for key, val in bq_row.items():
+        if key == "attributes":
+            for attr in (val or []):
+                a_key = attr.get("key")
+                if not a_key:
+                    continue
+                a_val = attr.get("value", {}) or {}
+                texts = a_val.get("text", []) or []
+                nums = a_val.get("numbers", []) or []
+                flat[f"attributes[key='{a_key}']"] = texts if texts else nums
+        elif isinstance(val, dict):
+            for sub_k, sub_v in val.items():
+                if sub_v is None or sub_v == [] or sub_v == "":
+                    continue
+                flat[f"{key}.{sub_k}"] = sub_v
+        else:
+            flat[key] = val
+    return flat
+
+
+def _is_empty_value(val: Any) -> bool:
+    return val is None or val == "" or val == [] or val == {}
+
+
+def build_enrichment_diff(
+    before_row: Dict[str, Any],
+    after_row: Dict[str, Any],
+    target_field: str = ""
+) -> Dict[str, Any]:
+    """
+    Builds a human-readable Before/After comparison summary describing exactly what
+    the Google Search + Gemini enrichment improved on the BigQuery record.
+    """
+    before_flat = _flatten_for_diff(before_row)
+    after_flat = _flatten_for_diff(after_row)
+
+    changes: List[Dict[str, Any]] = []
+    all_keys = list(dict.fromkeys(list(before_flat.keys()) + list(after_flat.keys())))
+
+    added_item_total = 0
+    added_char_total = 0
+
+    for key in all_keys:
+        b_val = before_flat.get(key)
+        a_val = after_flat.get(key)
+
+        if b_val == a_val:
+            continue
+
+        if isinstance(a_val, list) or isinstance(b_val, list):
+            b_list = b_val if isinstance(b_val, list) else ([] if _is_empty_value(b_val) else [b_val])
+            a_list = a_val if isinstance(a_val, list) else ([] if _is_empty_value(a_val) else [a_val])
+            added_items = [x for x in a_list if x not in b_list]
+            removed_items = [x for x in b_list if x not in a_list]
+            if not added_items and not removed_items:
+                continue
+            added_item_total += len(added_items)
+            changes.append({
+                "field": key,
+                "kind": "array",
+                "change_type": "added" if _is_empty_value(b_val) else "updated",
+                "before_value": b_list,
+                "after_value": a_list,
+                "added_items": added_items,
+                "removed_items": removed_items,
+                "before_count": len(b_list),
+                "after_count": len(a_list),
+                "is_target": key == target_field or key.startswith(target_field.split(".")[0]) if target_field else False
+            })
+        else:
+            b_text = "" if _is_empty_value(b_val) else str(b_val)
+            a_text = "" if _is_empty_value(a_val) else str(a_val)
+            if b_text == a_text:
+                continue
+            added_char_total += max(0, len(a_text) - len(b_text))
+            changes.append({
+                "field": key,
+                "kind": "scalar",
+                "change_type": "added" if not b_text else "updated",
+                "before_value": b_text,
+                "after_value": a_text,
+                "before_count": len(b_text),
+                "after_count": len(a_text),
+                "is_target": key == target_field if target_field else False
+            })
+
+    # Overall search-coverage metrics (how much more searchable the product became)
+    def _count_search_terms(row: Dict[str, Any]) -> int:
+        terms = set(row.get("tags") or [])
+        for attr in (row.get("attributes") or []):
+            if attr.get("key") == "tags":
+                terms.update((attr.get("value") or {}).get("text") or [])
+        return len(terms)
+
+    before_terms = _count_search_terms(before_row)
+    after_terms = _count_search_terms(after_row)
+
+    before_desc_len = len(before_row.get("description") or "")
+    after_desc_len = len(after_row.get("description") or "")
+
+    before_attr_count = len(before_row.get("attributes") or [])
+    after_attr_count = len(after_row.get("attributes") or [])
+
+    return {
+        "changed_field_count": len(changes),
+        "changes": changes,
+        "metrics": {
+            "search_terms_before": before_terms,
+            "search_terms_after": after_terms,
+            "search_terms_delta": after_terms - before_terms,
+            "description_length_before": before_desc_len,
+            "description_length_after": after_desc_len,
+            "description_length_delta": after_desc_len - before_desc_len,
+            "attributes_count_before": before_attr_count,
+            "attributes_count_after": after_attr_count,
+            "attributes_count_delta": after_attr_count - before_attr_count,
+            "added_items_total": added_item_total,
+            "added_chars_total": added_char_total
+        }
+    }

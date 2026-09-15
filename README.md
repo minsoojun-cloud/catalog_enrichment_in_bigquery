@@ -65,10 +65,18 @@ catalog_enrichment_in_bigquery/
 ├── test_enrichment_query.sql                   # BigQuery ML リモートモデル作成 ＆ テスト用 SELECT SQL
 ├── update_enrichment_query.sql                 # BigQuery ML によるインプレース UPDATE SQL
 ├── vertex_ai_batch_prediction_guide_ja.md      # 大規模バッチ予測パイプライン実装ガイド
+├── Dockerfile                                  # Cloud Run 用コンテナイメージ定義 (ビルドコンテキスト = リポジトリルート)
+├── .dockerignore                               # イメージへ含めないファイル
+├── .gcloudignore                               # Cloud Build へアップロードしないファイル
+├── deploy_cloudrun.sh                          # Cloud Run デプロイスクリプト (API有効化→SA作成→IAM→ビルド→デプロイ / 冪等)
+├── cloudbuild.yaml                             # Cloud Build による CI/CD 構成 (GitHub トリガー対応)
+├── CLOUD_RUN_DEPLOY.md                         # Cloud Run デプロイ手順・運用ガイド
 └── web_ui/                                     # Web ベースのデータマッピング ＆ マルチルール Enrichment アプリ
     ├── README.md                               # Web UI 詳細ガイド
     ├── run.sh                                  # Web サーバー起動スクリプト (Port 8080)
-    ├── requirements.txt                        # Python 依存パッケージ一覧
+    ├── requirements.txt                        # 本番ランタイム依存パッケージ (バージョン固定)
+    ├── requirements-dev.txt                    # 開発・テスト用の追加パッケージ
+    ├── .env.example                            # 環境変数サンプル
     ├── venv/                                   # Python 3.11 仮想環境 (uv)
     ├── app/                                    # FastAPI バックエンドソースコード
     │   ├── __init__.py
@@ -77,7 +85,7 @@ catalog_enrichment_in_bigquery/
     │   ├── schema_manager.py                   # BigQuery 31項目定義、自動マッチング推奨、日本語プリセットプロンプト6種
     │   ├── enricher.py                         # Gemini + Google Search Grounding エンジン・JSONパーサー
     │   ├── transformer.py                      # BigQuery スキーマフォーマット変換・バリデーション
-    │   └── sample_data.py                      # EDION 家電サンプルカタログデータ (5件)
+    │   └── sample_data.py                      # 汎用サンプル商品カタログデータ (5件)
     ├── static/                                 # フロントエンド Web UI (日本語版 SPA)
     │   ├── index.html                          # メインダッシュボード (マッピングUI ＆ 下部マルチ Enrichment テーブルリスト)
     │   ├── css/
@@ -335,3 +343,26 @@ FROM
 - [Vertex AI Batch Prediction 公式ドキュメント](https://cloud.google.com/vertex-ai/generative-ai/docs/multimodal/batch-prediction-gemini)
 - [Google Cloud Retail API カタログ属性 仕様](https://cloud.google.com/retail/docs/catalog)
 - [詳細パイプライン実装ガイド (`vertex_ai_batch_prediction_guide_ja.md`)](vertex_ai_batch_prediction_guide_ja.md)
+
+---
+
+## ☁️ Cloud Run へのデプロイ
+
+Web UI アプリはコンテナ化され、Cloud Run 上で稼働できます。詳細は **[CLOUD_RUN_DEPLOY.md](CLOUD_RUN_DEPLOY.md)** を参照してください。
+
+```bash
+# 実行内容の事前確認
+./deploy_cloudrun.sh --dry-run
+
+# デプロイ (API有効化 → SA作成 → IAM付与 → Cloud Build → Cloud Run)
+./deploy_cloudrun.sh
+```
+
+| 設定 | 値 | 理由 |
+|---|---|---|
+| `--max-instances` | **1** | データセット/ジョブ状態をプロセス内メモリに保持するため |
+| `--no-cpu-throttling` | 有効 | バッチ Enrichment がレスポンス後もバックグラウンド実行されるため |
+| `--timeout` | 3600 秒 | 大量データの一括処理に対応 |
+| `LOCATION` | `global` | `gemini-3.8-flash` は Vertex AI の global エンドポイント限定 |
+
+付与されるサービスアカウント権限（最小権限）: `roles/aiplatform.user`, `roles/bigquery.jobUser`, `roles/bigquery.dataEditor`

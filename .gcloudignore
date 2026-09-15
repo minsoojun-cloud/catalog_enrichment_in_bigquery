@@ -1,0 +1,11 @@
+# gcloud builds submit / gcloud run deploy --source が Cloud Build に
+# アップロードしないファイル (.dockerignore とほぼ同内容)
+#
+# 注意: このファイルが存在する場合、gcloud は .gitignore を参照しません。
+web_ui/venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+.git/
+.env
+.env.*
